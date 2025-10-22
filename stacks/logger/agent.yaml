@@ -1,0 +1,256 @@
+# /etc/vector/vector.yaml
+# Hardened host logging - Debian with UFW & containerd
+
+# ============================================================================
+# SOURCES
+# ============================================================================
+
+sources:
+  # SSH, sudo, and authentication events
+  auth_logs:
+    type: file
+    include:
+      - /var/log/auth.log
+    read_from: beginning
+
+  # UFW firewall logs
+  ufw_logs:
+    type: file
+    include:
+      - /var/log/ufw.log
+    read_from: beginning
+
+  # Containerd/Docker daemon logs
+  containerd_logs:
+    type: journald
+    include_units:
+      - containerd
+      - docker
+
+  # System journal (excluding already-collected units)
+  system_journal:
+    type: journald
+    exclude_units:
+      - containerd
+      - docker
+
+  # Host metrics (CPU, disk, memory, network)
+  host_metrics:
+    type: host_metrics
+    scrape_interval_secs: 60
+    collectors:
+      - cpu
+      - disk
+      - filesystem
+      - memory
+      - network
+
+  # Docker container logs via Docker socket
+  docker_logs:
+    type: "docker_logs"
+    # Mount point: /var/run/docker.sock:/var/run/docker.sock:ro
+    docker_host: "unix:///var/run/docker.sock"
+    # Exclude Vector itself to avoid log loops
+    exclude_containers:
+      - "vector-agent"
+    # Parse JSON logs if possible
+    auto_partial_merge: true
+
+# ============================================================================
+# TRANSFORMS - Filter noise, keep only what matters
+# ============================================================================
+
+transforms:
+  # Filter auth logs to security-relevant events only
+  auth_security:
+    type: filter
+    inputs:
+      - auth_logs
+    condition: |
+      contains(string!(.message), "sshd") || 
+      contains(string!(.message), "sudo") ||
+      contains(string!(.message), "COMMAND=") ||
+      contains(string!(.message), "authentication failure") ||
+      contains(string!(.message), "su:")
+
+  auth_metadata:
+    type: remap
+    inputs:
+      - auth_security
+    source: |
+      .service_name = "auth"
+
+  # UFW: Only log blocked connections, not all traffic
+  ufw_blocks_only:
+    type: filter
+    inputs:
+      - ufw_logs
+    condition: contains(string!(.message), "[UFW BLOCK]")
+
+  ufw_metadata:
+    type: remap
+    inputs:
+      - ufw_blocks_only
+    source: |
+      .service_name = "firewall"
+
+  # Containerd: Only errors and above
+  containerd_errors:
+    type: filter
+    inputs:
+      - containerd_logs
+    condition: |
+      to_int(.PRIORITY) <= 4 ||
+      match(string!(.message), r'(error|fatal|panic|failed)', case_sensitive: false)
+
+  containerd_metadata:
+    type: remap
+    inputs:
+      - containerd_errors
+    source: |
+      .service_name = "containerd"
+
+  # System journal: Only errors and above (priority 4 or lower)
+  journal_errors_only:
+    type: filter
+    inputs:
+      - system_journal
+    condition: to_int(.PRIORITY) <= 4
+
+  journal_metadata:
+    type: remap
+    inputs:
+      - journal_errors_only
+    source: |
+      .service_name = "journal"
+
+  # Disk usage: Alert when >80% full
+  disk_usage_alert:
+    type: filter
+    inputs:
+      - host_metrics
+    condition: |
+      exists(.gauge.value) &&
+      .name == "disk_used_percent" &&
+      .tags.filesystem != "tmpfs" &&
+      .gauge.value > 80
+
+  disk_metadata:
+    type: remap
+    inputs:
+      - disk_usage_alert
+    source: |
+      .service_name = "filesystem"
+
+  format_metrics:
+    type: remap
+    inputs:
+      - host_metrics
+    source: |
+      .service_name = "metrics"
+      .metric_name = .name
+      .metric_value = if exists(.gauge.value) {
+        .gauge.value
+      } else if exists(.counter.value) {
+        .counter.value
+      } else {
+        null
+      }
+
+  # Parse and enrich Docker logs
+  parse_docker_logs:
+    type: "remap"
+    inputs: ["docker_logs"]
+    source: |
+      # Add source metadata
+      .service_name = "docker"
+
+      # Extract container metadata
+      if exists(.container_name) {
+        .container = .container_name
+      }
+      if exists(.container_id) {
+        .container_id = slice!(.container_id, start: 0, end: 12)
+      }
+      if exists(.image) {
+        .container_image = .image
+      }
+
+      # Parse timestamp
+      if exists(.timestamp) {
+        .timestamp = parse_timestamp!(.timestamp, format: "%+")
+      } else {
+        .timestamp = now()
+      }
+
+      # Try to parse JSON logs from containers
+      if is_string(.message) {
+        parsed = parse_json(.message) ?? null
+        if parsed != null {
+          .log = parsed
+          del(.message)
+        }
+      }
+
+      # Add labels from Docker container
+      if exists(.label) {
+        .labels = .label
+      }
+
+  # Add host context to all logs
+  add_metadata:
+    type: remap
+    inputs:
+      - auth_metadata
+      - ufw_metadata
+      - containerd_metadata
+      - disk_metadata
+      - format_metrics
+      - journal_metadata
+      - parse_docker_logs
+    source: |
+      .environment = get_env_var("ENVIRONMENT") ?? "production"
+      .host = get_hostname!()
+      .agent_version = get_env_var("VECTOR_VERSION") ?? "unknown"
+
+# ============================================================================
+# SINKS - Send to your backend
+# ============================================================================
+
+# Sinks: forward to Grafana Cloud Loki
+sinks:
+  # Forward all logs to Grafana Cloud Loki
+  loki:
+    type: "loki"
+    inputs: ["add_metadata"]
+    endpoint: "${LOKI_ENDPOINT}"
+    encoding:
+      codec: "json"
+    auth:
+      strategy: "basic"
+      user: "${LOKI_USERNAME}"
+      password: "${LOKI_PASSWORD}"
+    labels:
+      environment: "{{ environment }}"
+      host: "{{ host }}"
+      service_name: "{{ service_name }}"
+    # Remove internal Vector metadata fields before sending to Loki
+    # These are added by Vector and not needed in Loki
+    remove_label_fields: true
+    batch:
+      timeout_secs: 1
+      max_events: 100
+    buffer:
+      type: "disk"
+      max_size: 268435488  # 256 MB
+      when_full: "block"
+    healthcheck:
+      enabled: true
+    request:
+      timeout_secs: 60
+      retry_attempts: 5
+
+  prometheus_exporter:
+    type: "prometheus_exporter"
+    address: "0.0.0.0:9598"
+    default_namespace: "vector_agent"
