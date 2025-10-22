@@ -1,0 +1,94 @@
+# Global options
+{
+	# Email for Let's Encrypt notifications
+	email {$EMAIL}
+
+	# Use production Let's Encrypt by default
+	# For testing, add: acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+
+	# Prometheus
+	admin :2019
+}
+
+# 1Password SCIM Bridge endpoint
+{$DOMAIN} {
+	# Serve robots.txt
+	handle /robots.txt {
+		respond "User-agent: *
+Disallow: /" 200 {
+			close
+		}
+	}
+
+	# Serve favicon
+	handle /favicon.ico {
+		root * /etc/caddy/static/imgs
+		file_server
+	}
+
+	# Rate limit: 500 requests per minute per IP
+	#    rate_limit {
+	#        zone dynamic {
+	#            key {http.request.remote.host}
+	#            events 500
+	#            window 1m
+	#        }
+	#    }
+
+	# Reverse proxy to SCIM bridge
+	reverse_proxy {$REVERSE}:{$REVERSE_PORT} {
+		health_uri {$REVERSE_HEALTH}
+		health_port {$REVERSE_PORT}
+		health_interval 30s
+		health_timeout 5s
+
+		# Forward real client IP
+		header_up X-Real-IP {http.request.remote.host}
+
+		# Transport settings
+		transport http {
+			read_buffer 4096
+			write_buffer 4096
+			max_response_header 10MiB
+			dial_timeout 10s
+			response_header_timeout 30s
+		}
+	}
+
+	# Security headers
+	header {
+		# Remove server identification
+		-Server
+
+		# Prevent clickjacking
+		X-Frame-Options "DENY"
+
+		# XSS protection
+		X-Content-Type-Options "nosniff"
+
+		# XSS protection (legacy but defense in depth)
+		X-XSS-Protection "1; mode=block"
+
+		# Strict transport security (HTTPS only)
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+
+		Referrer-Policy "strict-origin-when-cross-origin"
+
+		# Content Security Policy (adjust as needed)
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'"
+	}
+
+	# Access logging (stdout for Vector Agent collection)
+	log {
+		output stdout
+		format json
+		level {$LOG_LEVEL}
+	}
+
+	# Error handling with static pages
+	handle_errors {
+		rewrite * /errors/{err.status_code}.html
+		root * /etc/caddy/static
+		file_server
+	}
+}

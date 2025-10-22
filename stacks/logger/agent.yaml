@@ -34,26 +34,12 @@ sources:
       - containerd
       - docker
 
-  # Host metrics (CPU, disk, memory, network)
-  host_metrics:
-    type: host_metrics
-    scrape_interval_secs: 60
-    collectors:
-      - cpu
-      - disk
-      - filesystem
-      - memory
-      - network
-
   # Docker container logs via Docker socket
   docker_logs:
-    type: "docker_logs"
-    # Mount point: /var/run/docker.sock:/var/run/docker.sock:ro
+    type: docker_logs
     docker_host: "unix:///var/run/docker.sock"
-    # Exclude Vector itself to avoid log loops
     exclude_containers:
-      - "vector-agent"
-    # Parse JSON logs if possible
+      - "vector"
     auto_partial_merge: true
 
 # ============================================================================
@@ -124,43 +110,11 @@ transforms:
     source: |
       .service_name = "journal"
 
-  # Disk usage: Alert when >80% full
-  disk_usage_alert:
-    type: filter
-    inputs:
-      - host_metrics
-    condition: |
-      exists(.gauge.value) &&
-      .name == "disk_used_percent" &&
-      .tags.filesystem != "tmpfs" &&
-      .gauge.value > 80
-
-  disk_metadata:
-    type: remap
-    inputs:
-      - disk_usage_alert
-    source: |
-      .service_name = "filesystem"
-
-  format_metrics:
-    type: remap
-    inputs:
-      - host_metrics
-    source: |
-      .service_name = "metrics"
-      .metric_name = .name
-      .metric_value = if exists(.gauge.value) {
-        .gauge.value
-      } else if exists(.counter.value) {
-        .counter.value
-      } else {
-        null
-      }
-
   # Parse and enrich Docker logs
   parse_docker_logs:
-    type: "remap"
-    inputs: ["docker_logs"]
+    type: remap
+    inputs:
+      - docker_logs
     source: |
       # Add source metadata
       .service_name = "docker"
@@ -185,8 +139,8 @@ transforms:
 
       # Try to parse JSON logs from containers
       if is_string(.message) {
-        parsed = parse_json(.message) ?? null
-        if parsed != null {
+        parsed, err = parse_json(.message)
+        if err == null {
           .log = parsed
           del(.message)
         }
@@ -204,8 +158,6 @@ transforms:
       - auth_metadata
       - ufw_metadata
       - containerd_metadata
-      - disk_metadata
-      - format_metrics
       - journal_metadata
       - parse_docker_logs
     source: |
@@ -217,40 +169,40 @@ transforms:
 # SINKS - Send to your backend
 # ============================================================================
 
-# Sinks: forward to Grafana Cloud Loki
 sinks:
   # Forward all logs to Grafana Cloud Loki
   loki:
-    type: "loki"
-    inputs: ["add_metadata"]
+    type: loki
+    inputs:
+      - add_metadata
     endpoint: "${LOKI_ENDPOINT}"
     encoding:
-      codec: "json"
+      codec: json
     auth:
-      strategy: "basic"
+      strategy: basic
       user: "${LOKI_USERNAME}"
       password: "${LOKI_PASSWORD}"
     labels:
       environment: "{{ environment }}"
       host: "{{ host }}"
       service_name: "{{ service_name }}"
-    # Remove internal Vector metadata fields before sending to Loki
-    # These are added by Vector and not needed in Loki
+      container: '{{ container | default: value = "none" }}'
     remove_label_fields: true
     batch:
       timeout_secs: 1
       max_events: 100
     buffer:
-      type: "disk"
+      type: disk
       max_size: 268435488  # 256 MB
-      when_full: "block"
+      when_full: block
     healthcheck:
       enabled: true
     request:
       timeout_secs: 60
       retry_attempts: 5
 
+  # Vector internal metrics
   prometheus_exporter:
-    type: "prometheus_exporter"
+    type: prometheus_exporter
     address: "0.0.0.0:9598"
     default_namespace: "vector_agent"
