@@ -31,6 +31,8 @@ type Host struct {
 	registries     []RegistryCredential
 	firewallConfig *FirewallConfig
 	hardenDocker   bool
+	hardenOS       bool
+	hardenSSH      bool
 	plan           *Plan
 }
 
@@ -43,6 +45,8 @@ type HostBuilder struct {
 	registries     []RegistryCredential
 	firewallConfig *FirewallConfig
 	hardenDocker   bool
+	hardenOS       bool
+	hardenSSH      bool
 }
 
 // FirewallBuilder builds firewall configuration with a fluent API.
@@ -85,6 +89,40 @@ func (hb *HostBuilder) Registry(registry, username, password string) *HostBuilde
 // - log-driver limits (prevents disk exhaustion).
 func (hb *HostBuilder) HardenDocker() *HostBuilder {
 	hb.hardenDocker = true
+
+	return hb
+}
+
+// HardenOS enables OS-level security hardening via sysctl.
+// Applies balanced kernel parameter tuning that:
+// - Enables SYN flood protection (tcp_syncookies)
+// - Disables ICMP redirects (prevents MITM)
+// - Restricts kernel information disclosure (dmesg, kptr)
+// - Enables process isolation (ptrace_scope)
+// - Protects against symlink/hardlink attacks
+// - Optimizes network stack for security
+//
+// Configuration is Docker-compatible and doesn't break normal operations.
+// Settings are written to /etc/sysctl.d/99-hadron-security.conf.
+func (hb *HostBuilder) HardenOS() *HostBuilder {
+	hb.hardenOS = true
+
+	return hb
+}
+
+// HardenSSH enables SSH daemon security hardening.
+// Applies hardened SSH configuration:
+// - Ed25519 host keys only (disables RSA/ECDSA/DSA)
+// - Public key authentication only (no passwords)
+// - Modern cryptography (Curve25519, ChaCha20, AES-GCM)
+// - Disables X11/agent/TCP forwarding
+// - Connection timeouts and rate limiting
+// - Verbose logging for auditing
+//
+// Configuration is written to /etc/ssh/sshd_config (original backed up).
+// SSH daemon is reloaded (not restarted) to preserve current connections.
+func (hb *HostBuilder) HardenSSH() *HostBuilder {
+	hb.hardenSSH = true
 
 	return hb
 }
@@ -218,6 +256,8 @@ func (hb *HostBuilder) Build() *Host {
 		registries:     hb.registries,
 		firewallConfig: hb.firewallConfig,
 		hardenDocker:   hb.hardenDocker,
+		hardenOS:       hb.hardenOS,
+		hardenSSH:      hb.hardenSSH,
 		plan:           hb.plan,
 	}
 

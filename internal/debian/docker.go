@@ -1,7 +1,6 @@
 package debian
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -15,21 +14,9 @@ const (
 	dockerKeyrings = "/etc/apt/keyrings"
 )
 
-var (
-	errDockerPrereqFailed   = errors.New("docker prerequisite installation failed")
-	errDockerKeyringsDir    = errors.New("failed to create docker keyrings directory")
-	errDockerGPGDownload    = errors.New("failed to download docker GPG key")
-	errDockerGPGPermissions = errors.New("failed to set docker GPG key permissions")
-	errDockerRepoWrite      = errors.New("failed to write docker repository file")
-	errDockerRepoUpdate     = errors.New("apt-get update failed after adding docker repository")
-	errDockerPackageInstall = errors.New("docker package installation failed")
-	errDockerArchFetch      = errors.New("failed to get architecture")
-	errDockerCodenameFetch  = errors.New("failed to get debian codename")
-)
-
-// InstallDocker installs Docker CE following the official Debian installation procedure.
+// installDocker installs Docker CE following the official Debian installation procedure.
 // See: https://docs.docker.com/engine/install/debian/
-func InstallDocker(client ssh.Connection) error {
+func installDocker(client ssh.Connection) error {
 	// Step 1: Install prerequisites
 	if err := installDockerPrerequisites(client); err != nil {
 		return fmt.Errorf("failed to install Docker prerequisites: %w", err)
@@ -55,12 +42,12 @@ func InstallDocker(client ssh.Connection) error {
 
 // installDockerPrerequisites installs ca-certificates and curl.
 func installDockerPrerequisites(client ssh.Connection) error {
-	cmd := "DEBIAN_FRONTEND=noninteractive apt-get update -qq && " +
-		"apt-get install -y -qq --no-install-recommends ca-certificates curl"
+	cmd := "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && " +
+		"sudo apt-get install -qq --no-install-recommends ca-certificates curl"
 
 	_, stderr, err := client.Execute(cmd)
 	if err != nil {
-		return fmt.Errorf("%w: %s", errDockerPrereqFailed, stderr)
+		return fmt.Errorf("%w: %s", ErrDockerPrereqFailed, stderr)
 	}
 
 	return nil
@@ -69,27 +56,31 @@ func installDockerPrerequisites(client ssh.Connection) error {
 // addDockerGPGKey downloads and installs Docker's GPG key.
 func addDockerGPGKey(client ssh.Connection) error {
 	// Create keyrings directory with proper permissions
-	createDirCmd := "install -m 0755 -d " + dockerKeyrings
+	createDirCmd := "sudo install -m 0755 -d " + dockerKeyrings
 
 	_, stderr, err := client.Execute(createDirCmd)
 	if err != nil {
-		return fmt.Errorf("%w: %s", errDockerKeyringsDir, stderr)
+		return fmt.Errorf("%w: %s", ErrDockerKeyringsDir, stderr)
 	}
 
-	// Download Docker GPG key
-	downloadKeyCmd := fmt.Sprintf("curl -fsSL %s -o %s", dockerGPGURL, dockerGPGPath)
+	// Download Docker GPG key to temp location, then move with sudo
+	downloadKeyCmd := fmt.Sprintf(
+		"curl -fsSL %s -o /tmp/docker.asc && sudo mv /tmp/docker.asc %s",
+		dockerGPGURL,
+		dockerGPGPath,
+	)
 
 	_, stderr, err = client.Execute(downloadKeyCmd)
 	if err != nil {
-		return fmt.Errorf("%w: %s", errDockerGPGDownload, stderr)
+		return fmt.Errorf("%w: %s", ErrDockerGPGDownload, stderr)
 	}
 
 	// Set proper permissions on GPG key
-	chmodCmd := "chmod a+r " + dockerGPGPath
+	chmodCmd := "sudo chmod a+r " + dockerGPGPath
 
 	_, stderr, err = client.Execute(chmodCmd)
 	if err != nil {
-		return fmt.Errorf("%w: %s", errDockerGPGPermissions, stderr)
+		return fmt.Errorf("%w: %s", ErrDockerGPGPermissions, stderr)
 	}
 
 	return nil
@@ -98,21 +89,21 @@ func addDockerGPGKey(client ssh.Connection) error {
 // setupDockerRepository adds Docker's apt repository to sources.list.d.
 func setupDockerRepository(client ssh.Connection) error {
 	// Get architecture
-	archCmd := "dpkg --print-architecture"
+	archCmd := "sudo dpkg --print-architecture"
 
 	arch, _, err := client.Execute(archCmd)
 	if err != nil {
-		return fmt.Errorf("%w: %w", errDockerArchFetch, err)
+		return fmt.Errorf("%w: %w", ErrDockerArchFetch, err)
 	}
 
 	arch = strings.TrimSpace(arch)
 
-	// Get Debian version codename
-	codenameCmd := ". /etc/os-release && echo \"$VERSION_CODENAME\""
+	// Get Debian version codename (parse file safely without executing it)
+	codenameCmd := "grep '^VERSION_CODENAME=' /etc/os-release | cut -d= -f2 | tr -d '\"'"
 
 	codename, _, err := client.Execute(codenameCmd)
 	if err != nil {
-		return fmt.Errorf("%w: %w", errDockerCodenameFetch, err)
+		return fmt.Errorf("%w: %w", ErrDockerCodenameFetch, err)
 	}
 
 	codename = strings.TrimSpace(codename)
@@ -124,19 +115,19 @@ func setupDockerRepository(client ssh.Connection) error {
 	)
 
 	// Write repository file
-	writeRepoCmd := fmt.Sprintf("echo '%s' | tee %s > /dev/null", repoLine, dockerRepoFile)
+	writeRepoCmd := fmt.Sprintf("echo '%s' | sudo tee %s > /dev/null", repoLine, dockerRepoFile)
 
 	_, stderr, err := client.Execute(writeRepoCmd)
 	if err != nil {
-		return fmt.Errorf("%w: %s", errDockerRepoWrite, stderr)
+		return fmt.Errorf("%w: %s", ErrDockerRepoWrite, stderr)
 	}
 
 	// Update apt cache
-	updateCmd := "apt-get update -qq"
+	updateCmd := "sudo apt-get update -qq"
 
 	_, stderr, err = client.Execute(updateCmd)
 	if err != nil {
-		return fmt.Errorf("%w: %s", errDockerRepoUpdate, stderr)
+		return fmt.Errorf("%w: %s", ErrDockerRepoUpdate, stderr)
 	}
 
 	return nil
@@ -148,33 +139,17 @@ func installDockerPackages(client ssh.Connection) error {
 		"docker-ce",
 		"docker-ce-cli",
 		"containerd.io",
-		"docker-buildx-plugin",
-		"docker-compose-plugin",
 	}
 
-	installCmd := "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends " + joinPackages(
+	installCmd := "sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq --no-install-recommends " + strings.Join(
 		packages,
+		" ",
 	)
 
 	_, stderr, err := client.Execute(installCmd)
 	if err != nil {
-		return fmt.Errorf("%w: %s", errDockerPackageInstall, stderr)
+		return fmt.Errorf("%w: %s", ErrDockerPackageInstall, stderr)
 	}
 
 	return nil
-}
-
-// joinPackages joins package names with spaces for apt-get command.
-func joinPackages(packages []string) string {
-	result := ""
-
-	for i, pkg := range packages {
-		if i > 0 {
-			result += " "
-		}
-
-		result += pkg
-	}
-
-	return result
 }

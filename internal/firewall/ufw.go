@@ -2,16 +2,14 @@
 package firewall
 
 import (
-	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/the-agent-c-ai/hadron/internal/debian"
 	"github.com/the-agent-c-ai/hadron/sdk/ssh"
 )
-
-var errParseDefaults = errors.New("failed to parse ufw defaults")
 
 // Rule represents a single firewall rule.
 type Rule struct {
@@ -114,16 +112,13 @@ func GetDefaults(client ssh.Connection) (incoming, outgoing string, err error) {
 		return matches[incomingMatchIndex], matches[outgoingMatchIndex], nil
 	}
 
-	return "", "", errParseDefaults
+	return "", "", ErrParseDefaults
 }
 
-// Install installs ufw on the remote host.
+// Install installs ufw on the remote host using debian package manager.
 func Install(client ssh.Connection) error {
-	cmd := "sudo apt-get update && sudo apt-get install -y ufw"
-
-	_, stderr, err := client.Execute(cmd)
-	if err != nil {
-		return fmt.Errorf("failed to install ufw: %w (stderr: %s)", err, stderr)
+	if err := debian.EnsureInstalled(client, "ufw"); err != nil {
+		return fmt.Errorf("failed to install ufw: %w", err)
 	}
 
 	return nil

@@ -12,14 +12,9 @@ const (
 	autoUpgradesConfigPath    = "/etc/apt/apt.conf.d/20auto-upgrades"
 )
 
-// IsUnattendedUpgradesInstalled checks if unattended-upgrades package is installed.
-func IsUnattendedUpgradesInstalled(client ssh.Connection) (bool, error) {
-	return IsInstalled(client, unattendedUpgradesPackage)
-}
-
-// IsAutoUpdatesConfigured checks if automatic updates are properly configured.
+// isAutoUpdatesConfigured checks if automatic updates are properly configured.
 // Verifies that /etc/apt/apt.conf.d/20auto-upgrades exists and contains proper settings.
-func IsAutoUpdatesConfigured(client ssh.Connection) (bool, error) {
+func isAutoUpdatesConfigured(client ssh.Connection) (bool, error) {
 	// Check if config file exists
 	cmd := fmt.Sprintf("test -f %s && echo exists || echo missing", autoUpgradesConfigPath)
 
@@ -47,19 +42,41 @@ func IsAutoUpdatesConfigured(client ssh.Connection) (bool, error) {
 	return strings.TrimSpace(stdout) == "configured", nil
 }
 
-// InstallUnattendedUpgrades installs the unattended-upgrades package.
-func InstallUnattendedUpgrades(client ssh.Connection) error {
-	return EnsureInstalled(client, unattendedUpgradesPackage)
-}
-
-// ConfigureAutoUpdates enables automatic security updates via dpkg-reconfigure.
-func ConfigureAutoUpdates(client ssh.Connection) error {
+// configureAutoUpdates enables automatic security updates via dpkg-reconfigure.
+func configureAutoUpdates(client ssh.Connection) error {
 	// Use -plow for non-interactive configuration (low priority = enable auto-updates)
 	cmd := "sudo DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -plow unattended-upgrades"
 
 	_, stderr, err := client.Execute(cmd)
 	if err != nil {
 		return fmt.Errorf("failed to configure automatic updates: %w (stderr: %s)", err, stderr)
+	}
+
+	return nil
+}
+
+// EnsureAutoUpdatesEnabled ensures unattended-upgrades is installed and configured.
+// This is a consolidated function that:
+// 1. Installs unattended-upgrades package if not already installed.
+// 2. Checks if automatic updates are already configured.
+// 3. Configures automatic updates if needed.
+func EnsureAutoUpdatesEnabled(client ssh.Connection) error {
+	// Step 1: Ensure package is installed
+	if err := EnsureInstalled(client, unattendedUpgradesPackage); err != nil {
+		return fmt.Errorf("failed to install unattended-upgrades: %w", err)
+	}
+
+	// Step 2: Check if already configured
+	configured, err := isAutoUpdatesConfigured(client)
+	if err != nil {
+		return fmt.Errorf("failed to check auto-updates configuration: %w", err)
+	}
+
+	// Step 3: Configure if needed
+	if !configured {
+		if err := configureAutoUpdates(client); err != nil {
+			return fmt.Errorf("failed to configure automatic updates: %w", err)
+		}
 	}
 
 	return nil

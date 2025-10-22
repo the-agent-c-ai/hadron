@@ -7,6 +7,8 @@ import (
 	"github.com/the-agent-c-ai/hadron/internal/debian"
 	"github.com/the-agent-c-ai/hadron/internal/docker"
 	"github.com/the-agent-c-ai/hadron/internal/firewall"
+	"github.com/the-agent-c-ai/hadron/internal/sshd"
+	"github.com/the-agent-c-ai/hadron/internal/sysctl"
 	"github.com/the-agent-c-ai/hadron/sdk/ssh"
 )
 
@@ -68,6 +70,16 @@ func (e *executor) execute() error {
 	// Deploy packages first (install then remove)
 	if err := e.deployPackages(); err != nil {
 		return fmt.Errorf("failed to deploy packages: %w", err)
+	}
+
+	// Apply OS-level hardening (sysctl) after packages but before Docker
+	if err := e.deployOSHardening(); err != nil {
+		return fmt.Errorf("failed to deploy OS hardening: %w", err)
+	}
+
+	// Apply SSH hardening before Docker (in case Docker breaks SSH somehow)
+	if err := e.deploySSHHardening(); err != nil {
+		return fmt.Errorf("failed to deploy SSH hardening: %w", err)
 	}
 
 	// Configure Docker daemon after packages (Docker must be installed)
@@ -578,51 +590,15 @@ func (e *executor) deployHostAutoUpdates(host *Host) error {
 
 	e.plan.logger.Info().
 		Str("host", host.String()).
-		Msg("Configuring automatic security updates")
+		Msg("Ensuring automatic security updates are enabled")
 
-	// Check if unattended-upgrades is installed
-	installed, err := debian.IsUnattendedUpgradesInstalled(client)
-	if err != nil {
-		return fmt.Errorf("failed to check if unattended-upgrades is installed on %s: %w", host, err)
+	if err := debian.EnsureAutoUpdatesEnabled(client); err != nil {
+		return fmt.Errorf("failed to enable automatic updates on %s: %w", host, err)
 	}
 
-	if !installed {
-		e.plan.logger.Info().
-			Str("host", host.String()).
-			Msg("unattended-upgrades not installed, installing")
-
-		if err := debian.InstallUnattendedUpgrades(client); err != nil {
-			return fmt.Errorf("failed to install unattended-upgrades on %s: %w", host, err)
-		}
-
-		e.plan.logger.Info().
-			Str("host", host.String()).
-			Msg("unattended-upgrades installed successfully")
-	}
-
-	// Check if automatic updates are configured
-	configured, err := debian.IsAutoUpdatesConfigured(client)
-	if err != nil {
-		return fmt.Errorf("failed to check auto-updates configuration on %s: %w", host, err)
-	}
-
-	if !configured {
-		e.plan.logger.Info().
-			Str("host", host.String()).
-			Msg("Automatic updates not configured, enabling")
-
-		if err := debian.ConfigureAutoUpdates(client); err != nil {
-			return fmt.Errorf("failed to configure automatic updates on %s: %w", host, err)
-		}
-
-		e.plan.logger.Info().
-			Str("host", host.String()).
-			Msg("Automatic updates configured successfully")
-	} else {
-		e.plan.logger.Info().
-			Str("host", host.String()).
-			Msg("Automatic updates already configured, skipping")
-	}
+	e.plan.logger.Info().
+		Str("host", host.String()).
+		Msg("Automatic updates enabled successfully")
 
 	e.plan.logger.Info().
 		Str("host", host.String()).
@@ -863,6 +839,88 @@ func (e *executor) loginHostRegistries(host *Host) error {
 			Str("registry", registry.Registry).
 			Msg("Registry login successful")
 	}
+
+	return nil
+}
+
+// deployOSHardening applies OS-level security hardening on all hosts.
+func (e *executor) deployOSHardening() error {
+	// Process each host's OS hardening configuration
+	for _, host := range e.plan.hosts {
+		if err := e.deployHostOSHardening(host); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// deployHostOSHardening applies sysctl security hardening for a single host.
+func (e *executor) deployHostOSHardening(host *Host) error {
+	// Skip if OS hardening not requested
+	if !host.hardenOS {
+		return nil
+	}
+
+	// Get SSH client for this host
+	client, err := e.sshPool.GetClient(host.Endpoint())
+	if err != nil {
+		return fmt.Errorf(errFailedSSHClient, host, err)
+	}
+
+	e.plan.logger.Info().
+		Str("host", host.String()).
+		Msg("Applying OS-level security hardening (sysctl)")
+
+	// Apply sysctl security configuration
+	if err := sysctl.Apply(client); err != nil {
+		return fmt.Errorf("failed to apply OS hardening on %s: %w", host, err)
+	}
+
+	e.plan.logger.Info().
+		Str("host", host.String()).
+		Msg("OS hardening configuration complete")
+
+	return nil
+}
+
+// deploySSHHardening applies SSH daemon hardening on all hosts.
+func (e *executor) deploySSHHardening() error {
+	// Process each host's SSH hardening configuration
+	for _, host := range e.plan.hosts {
+		if err := e.deployHostSSHHardening(host); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// deployHostSSHHardening applies SSH daemon hardening for a single host.
+func (e *executor) deployHostSSHHardening(host *Host) error {
+	// Skip if SSH hardening not requested
+	if !host.hardenSSH {
+		return nil
+	}
+
+	// Get SSH client for this host
+	client, err := e.sshPool.GetClient(host.Endpoint())
+	if err != nil {
+		return fmt.Errorf(errFailedSSHClient, host, err)
+	}
+
+	e.plan.logger.Info().
+		Str("host", host.String()).
+		Msg("Applying SSH daemon security hardening")
+
+	// Apply SSH daemon hardening configuration
+	if err := sshd.Apply(client); err != nil {
+		return fmt.Errorf("failed to apply SSH hardening on %s: %w", host, err)
+	}
+
+	e.plan.logger.Info().
+		Str("host", host.String()).
+		Msg("SSH hardening configuration complete (daemon reloaded)")
 
 	return nil
 }
