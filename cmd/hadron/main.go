@@ -90,35 +90,34 @@ func deploy(c *cli.Context) error {
 	planPath := c.String(flagNamePlan)
 	dryRun := c.Bool("dry-run")
 
-	// Verify plan file exists
-	if _, err := os.Stat(planPath); err != nil {
+	// Determine if planPath is a directory or file
+	stat, err := os.Stat(planPath)
+	if err != nil {
 		return fmt.Errorf("%w: %s", errPlanFileNotFound, planPath)
 	}
 
-	// Get absolute path
-	absPath, err := filepath.Abs(planPath)
-	if err != nil {
-		return fmt.Errorf("failed to get absolute path: %w", err)
+	var planDir string
+	var args []string
+
+	if stat.IsDir() {
+		// Directory: go run .
+		planDir = planPath
+		args = []string{goCommandRunVerb, "."}
+	} else {
+		// File: go run basename
+		planDir = filepath.Dir(planPath)
+		args = []string{goCommandRunVerb, filepath.Base(planPath)}
 	}
 
-	log.Info().Str("plan", absPath).Bool("dry-run", dryRun).Msg("Deploying plan")
-
-	// Build go run command args
-	// Check if shared.go exists in the same directory
-	goRunArgs := []string{goCommandRunVerb, absPath}
-	sharedPath := filepath.Join(filepath.Dir(absPath), "shared.go")
-
-	if _, err := os.Stat(sharedPath); err == nil {
-		goRunArgs = []string{goCommandRunVerb, absPath, sharedPath}
-	}
+	log.Info().Str("plan", planPath).Bool("dry-run", dryRun).Msg("Deploying plan")
 
 	// Execute go run on the plan
 	//nolint:gosec
-	cmd := exec.Command("go", goRunArgs...)
+	cmd := exec.Command("go", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(), fmt.Sprintf("HADRON_DRY_RUN=%t", dryRun))
-	cmd.Dir = filepath.Dir(absPath)
+	cmd.Dir = planDir
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to execute plan: %w", err)
@@ -130,35 +129,34 @@ func deploy(c *cli.Context) error {
 func destroy(c *cli.Context) error {
 	planPath := c.String(flagNamePlan)
 
-	// Verify plan file exists
-	if _, err := os.Stat(planPath); err != nil {
+	// Determine if planPath is a directory or file
+	stat, err := os.Stat(planPath)
+	if err != nil {
 		return fmt.Errorf("%w: %s", errPlanFileNotFound, planPath)
 	}
 
-	// Get absolute path
-	absPath, err := filepath.Abs(planPath)
-	if err != nil {
-		return fmt.Errorf("failed to get absolute path: %w", err)
+	var planDir string
+	var args []string
+
+	if stat.IsDir() {
+		// Directory: go run .
+		planDir = planPath
+		args = []string{goCommandRunVerb, "."}
+	} else {
+		// File: go run basename
+		planDir = filepath.Dir(planPath)
+		args = []string{goCommandRunVerb, filepath.Base(planPath)}
 	}
 
-	log.Info().Str("plan", absPath).Msg("Destroying resources")
-
-	// Build go run command args
-	// Check if shared.go exists in the same directory
-	goRunArgs := []string{goCommandRunVerb, absPath}
-	sharedPath := filepath.Join(filepath.Dir(absPath), "shared.go")
-
-	if _, err := os.Stat(sharedPath); err == nil {
-		goRunArgs = []string{goCommandRunVerb, absPath, sharedPath}
-	}
+	log.Info().Str("plan", planPath).Msg("Destroying resources")
 
 	// Execute go run on the plan with destroy mode
 	//nolint:gosec
-	cmd := exec.Command("go", goRunArgs...)
+	cmd := exec.Command("go", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(), "HADRON_DESTROY=true")
-	cmd.Dir = filepath.Dir(absPath)
+	cmd.Dir = planDir
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to execute plan: %w", err)
