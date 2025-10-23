@@ -119,7 +119,7 @@ formatters:
       sections:
         - standard
         - default
-        - prefix(go.farcloser.world)
+        - prefix(github.com/the-agent-c-ai)
         - localmodule
       no-inline-comments: true
       no-prefix-comments: true

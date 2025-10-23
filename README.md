@@ -137,15 +137,16 @@ import (
 
 func main() {
     // Load environment
-    godotenv.Load()
+    _ = sdk.LoadEnv(".env")
+
+    ctx := context.Background()
 
     // Create plan
     plan := sdk.NewPlan("black-observability")
 
     // Define host
-    blackHost := plan.Host(os.Getenv("BLACK_HOST")).
-        User(os.Getenv("BLACK_USER")).
-        SSHKey("~/.ssh/id_rsa").  // optional, defaults to ~/.ssh/id_rsa
+    blackHost := plan.Host(sdk.GetEnv("BLACK_HOST")).
+        User(sdk.GetEnv("BLACK_USER")).
         Build()
 
     // Define network
@@ -199,7 +200,9 @@ func main() {
         Build()
 
     // Execute plan
-    plan.Execute()
+    if err := plan.Execute(ctx); err != nil {
+        log.Fatal().Err(err).Msg("Deployment failed")
+    }
 }
 ```
 
@@ -214,7 +217,9 @@ import (
 )
 
 func main() {
-    godotenv.Load()
+    _ = sdk.LoadEnv(".env")
+
+    ctx := context.Background()
 
     plan := sdk.NewPlan("multi-region-deployment")
 
@@ -254,8 +259,46 @@ func main() {
         EnvFile(".env").
         Build()
 
-    plan.Execute()
+    if err := plan.Execute(ctx); err != nil {
+        log.Fatal().Err(err).Msg("Deployment failed")
+    }
 }
+```
+
+## Reusable Stacks
+
+Hadron provides pre-built infrastructure stacks in the `stacks/` directory:
+
+- **`logger`**: Vector log collection and forwarding to Loki
+- **`proxy`**: Caddy reverse proxy with automatic HTTPS
+
+These can be imported and used in your plans:
+
+```go
+import (
+    "github.com/the-agent-c-ai/hadron/sdk"
+    "github.com/the-agent-c-ai/hadron/stacks/logger"
+    "github.com/the-agent-c-ai/hadron/stacks/proxy"
+)
+
+// Deploy logging stack
+logger.Logger(plan, host, &logger.Config{
+    Image:        "ghcr.io/org/vector@sha256:...",
+    LogLevel:     "info",
+    Environment:  "production",
+    LokiEndpoint: "https://loki.example.com",
+    LokiUsername: "user",
+    LokiPassword: "pass",
+})
+
+// Deploy reverse proxy
+proxy.Proxy(plan, appContainer, network, host, &proxy.Config{
+    Image:    "ghcr.io/org/caddy@sha256:...",
+    LogLevel: "info",
+    Static:   "./static",
+    Email:    "admin@example.com",
+    Domain:   "app.example.com",
+})
 ```
 
 ## Configuration
