@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for git-validation
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.3'
+          cache: true
+
+      - name: Install dependencies
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@2b224c2cf4c9f261c22a16af7f8ca6408467f338
+          go install github.com/vbatts/git-validation@7b60e35b055dd2eab5844202ffffad51d9c93922
+          go install github.com/containerd/ltag@66e6a514664ee2d11a470735519fa22b1a9eaabd
+          go install github.com/google/go-licenses/v2@3e084b0caf710f7bfead967567539214f598c0a2
+          pip install yamllint
+          sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Lint Go (all platforms)
+        run: make lint-go-all
+
+      - name: Lint commits
+        if: github.event_name == 'pull_request'
+        env:
+          LINT_COMMIT_RANGE: origin/${{ github.base_ref }}..HEAD
+        run: make lint-commits
+
+      - name: Lint go.mod
+        run: make lint-mod
+
+      - name: Lint licenses (all platforms)
+        run: make lint-licenses-all
+
+      - name: Lint headers
+        run: make lint-headers
+
+      - name: Lint YAML
+        run: make lint-yaml
+
+      - name: Lint shell scripts
+        run: make lint-shell
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.3'
+          cache: true
+
+      - name: Run unit tests
+        run: make test-unit
+
+      - name: Run race detector tests
+        run: make test-unit-race
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.3'
+          cache: true
+
+      - name: Build binary
+        run: make build
+
+      - name: Verify binary
+        run: ./bin/hadron --help
