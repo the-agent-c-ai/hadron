@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/the-agent-c-ai/hadron/sdk/hash"
@@ -472,8 +473,16 @@ func (c *Container) ConfigHash() string {
 		}
 	}
 
-	for k, v := range c.envVars {
-		configParts = append(configParts, fmt.Sprintf("%s=%s", k, v))
+	// Sort env var keys for deterministic hash
+	envKeys := make([]string, 0, len(c.envVars))
+	for k := range c.envVars {
+		envKeys = append(envKeys, k)
+	}
+
+	sort.Strings(envKeys)
+
+	for _, k := range envKeys {
+		configParts = append(configParts, fmt.Sprintf("%s=%s", k, c.envVars[k]))
 	}
 
 	configParts = append(configParts, fmt.Sprintf("readonly=%t", c.readOnly))

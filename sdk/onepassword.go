@@ -16,10 +16,10 @@ const (
 // This should be called before making parallel GetSecret/GetDocument calls
 // to prevent multiple biometric authentication prompts.
 //
-// Uses `op whoami` which triggers authentication if needed and returns
-// account information if already authenticated.
+// Uses `op signin` which is idempotent - it only prompts for authentication
+// if not already authenticated. Requires 1Password desktop app integration.
 func AuthenticateOp(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, opCLI, "whoami")
+	cmd := exec.CommandContext(ctx, opCLI, "signin")
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
