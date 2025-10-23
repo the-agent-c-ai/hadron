@@ -6,12 +6,48 @@
 	# Use production Let's Encrypt by default
 	# For testing, add: acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
 
+    # Disables HTTP listener entirely
+    http_port 0
+
 	# Prometheus
 	admin :2019
 }
 
 # 1Password SCIM Bridge endpoint
 {$DOMAIN} {
+	# Rate limit: 500 requests per minute per IP
+	#    rate_limit {
+	#        zone dynamic {
+	#            key {http.request.remote.host}
+	#            events 500
+	#            window 1m
+	#        }
+	#    }
+
+	@webhooks path {$MOUNTPOINT}
+
+	handle @webhooks {
+        # Reverse proxy to SCIM bridge
+        reverse_proxy {$REVERSE}:{$REVERSE_PORT} {
+            health_uri {$REVERSE_HEALTH}
+            health_port {$REVERSE_HEALTH_PORT}
+            health_interval 30s
+            health_timeout 5s
+
+            # Forward real client IP
+            header_up X-Real-IP {http.request.remote.host}
+
+            # Transport settings
+            transport http {
+                read_buffer 4096
+                write_buffer 4096
+                max_response_header 10MiB
+                dial_timeout 10s
+                response_header_timeout 30s
+            }
+        }
+	}
+
 	# Serve robots.txt
 	handle /robots.txt {
 		respond "User-agent: *
@@ -26,33 +62,9 @@ Disallow: /" 200 {
 		file_server
 	}
 
-	# Rate limit: 500 requests per minute per IP
-	#    rate_limit {
-	#        zone dynamic {
-	#            key {http.request.remote.host}
-	#            events 500
-	#            window 1m
-	#        }
-	#    }
-
-	# Reverse proxy to SCIM bridge
-	reverse_proxy {$REVERSE}:{$REVERSE_PORT} {
-		health_uri {$REVERSE_HEALTH}
-		health_port {$REVERSE_PORT}
-		health_interval 30s
-		health_timeout 5s
-
-		# Forward real client IP
-		header_up X-Real-IP {http.request.remote.host}
-
-		# Transport settings
-		transport http {
-			read_buffer 4096
-			write_buffer 4096
-			max_response_header 10MiB
-			dial_timeout 10s
-			response_header_timeout 30s
-		}
+	# Block all other requests
+	handle {
+        abort
 	}
 
 	# Security headers

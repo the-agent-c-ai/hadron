@@ -13,13 +13,15 @@ var caddyfile string
 
 // Config contains configuration for the Caddy reverse proxy.
 type Config struct {
-	Image         string
-	LogLevel      string
-	Static        string
-	Email         string
-	Domain        string
-	ReversePort   string
-	ReverseHealth string
+	Image             string
+	LogLevel          string
+	Static            string
+	Email             string
+	Domain            string
+	ReversePort       string
+	ReverseHealth     string
+	ReverseHealthPort string
+	MountPoint        string
 }
 
 // Proxy deploys a Caddy reverse proxy container with automatic HTTPS.
@@ -36,6 +38,11 @@ func Proxy(plan *sdk.Plan, depends *sdk.Container, network *sdk.Network, host *s
 		Host(host).
 		Build()
 
+	mountPoint := cnf.MountPoint
+	if mountPoint == "" {
+		mountPoint = "/*"
+	}
+
 	plan.Container("caddy").
 		Host(host).
 		Image(cnf.Image).
@@ -48,8 +55,10 @@ func Proxy(plan *sdk.Plan, depends *sdk.Container, network *sdk.Network, host *s
 		Env("DOMAIN", cnf.Domain).
 		Env("EMAIL", cnf.Email).
 		Env("REVERSE", depends.NetworkAlias()).
-		Env("REVERSE_PORT", "3002").
-		Env("REVERSE_HEALTH", "/ping").
+		Env("REVERSE_PORT", cnf.ReversePort).
+		Env("REVERSE_HEALTH", cnf.ReverseHealth).
+		Env("REVERSE_HEALTH_PORT", cnf.ReverseHealthPort).
+		Env("MOUNTPOINT", mountPoint).
 		Restart("unless-stopped").
 		ReadOnly().
 		CapDrop("ALL").
