@@ -6,33 +6,22 @@
 # ============================================================================
 
 sources:
+  vector_metrics:
+    type: internal_metrics
+
   # SSH, sudo, and authentication events
   auth_logs:
     type: file
     include:
-      - /var/log/auth.log
+      - /host/auth.log
     read_from: beginning
 
   # UFW firewall logs
   ufw_logs:
     type: file
     include:
-      - /var/log/ufw.log
+      - /host/ufw.log
     read_from: beginning
-
-  # Containerd/Docker daemon logs
-  containerd_logs:
-    type: journald
-    include_units:
-      - containerd
-      - docker
-
-  # System journal (excluding already-collected units)
-  system_journal:
-    type: journald
-    exclude_units:
-      - containerd
-      - docker
 
   # Docker container logs via Docker socket
   docker_logs:
@@ -41,10 +30,6 @@ sources:
     exclude_containers:
       - "vector"
     auto_partial_merge: true
-
-  # Vector internal metrics
-  vector_metrics:
-    type: internal_metrics
 
 # ============================================================================
 # TRANSFORMS - Filter noise, keep only what matters
@@ -84,38 +69,6 @@ transforms:
       - ufw_blocks_only
     source: |
       .service_name = "firewall"
-      .container = "none"
-
-  # Containerd: Only errors and above
-  containerd_errors:
-    type: filter
-    inputs:
-      - containerd_logs
-    condition: |
-      to_int!(.PRIORITY) <= 4 ||
-      match(string!(.message), r'(?i)(error|fatal|panic|failed)')
-
-  containerd_metadata:
-    type: remap
-    inputs:
-      - containerd_errors
-    source: |
-      .service_name = "containerd"
-      .container = "none"
-
-  # System journal: Only errors and above (priority 4 or lower)
-  journal_errors_only:
-    type: filter
-    inputs:
-      - system_journal
-    condition: to_int!(.PRIORITY) <= 4
-
-  journal_metadata:
-    type: remap
-    inputs:
-      - journal_errors_only
-    source: |
-      .service_name = "journal"
       .container = "none"
 
   # Parse and enrich Docker logs
@@ -167,8 +120,6 @@ transforms:
     inputs:
       - auth_metadata
       - ufw_metadata
-      - containerd_metadata
-      - journal_metadata
       - parse_docker_logs
     source: |
       .environment = get_env_var("ENVIRONMENT") ?? "production"
@@ -214,7 +165,7 @@ sinks:
   # Vector internal metrics
   prometheus_exporter:
     type: prometheus_exporter
-    inputs:
-      - vector_metrics
     address: "0.0.0.0:9598"
     default_namespace: "vector_agent"
+    inputs:
+      - vector_metrics

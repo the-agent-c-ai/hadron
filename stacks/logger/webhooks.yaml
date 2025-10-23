@@ -1,0 +1,172 @@
+# Vector Aggregator Configuration
+# Receives logs from webhooks
+
+api:
+  enabled: true
+  address: "0.0.0.0:8686"
+
+sources:
+  vector_metrics:
+    type: internal_metrics
+  # Single HTTP server for all webhooks
+  # Accepts requests from Caddy on paths: /webhooks/auth0, /webhooks/resend, /webhooks/generic
+  webhooks:
+    type: "http_server"
+    address: "0.0.0.0:8080"
+    encoding: "json"
+    strict_path: false  # Accept requests on any path (Caddy sends full paths)
+    headers:
+      - "Authorization"
+      - "svix-id"
+      - "svix-timestamp"
+      - "svix-signature"
+
+# Transforms: enrich and process logs
+transforms:
+  # Route webhooks based on path
+  route_webhooks:
+    type: "route"
+    inputs: ["webhooks"]
+    route:
+      auth0: '.path == "/webhooks/auth0"'
+      resend: '.path == "/webhooks/resend"'
+      generic: '.path == "/webhooks/generic"'
+
+  # Add metadata to Auth0 logs
+  auth0_transform:
+    type: "remap"
+    inputs: ["route_webhooks.auth0"]
+    source: |
+      .service_name = "auth0"
+      .container = "none"
+      .timestamp = now()
+
+      # Normalize headers to lowercase for case-insensitive access
+      headers_lower = {}
+      for_each(object!(.headers)) -> |key, value| {
+        headers_lower = set!(headers_lower, [downcase(key)], value)
+      }
+
+      # Validate Authorization header
+      auth_header = get_env_var!("AUTH0_WEBHOOK_SECRET")
+      if !exists(headers_lower.authorization) || headers_lower.authorization != auth_header {
+        log("Unauthorized Auth0 webhook request", level: "warn")
+        abort
+      }
+
+      # Parse Auth0 log event
+      if exists(.type) {
+        .log_type = .type
+      }
+      if exists(.data.date) {
+        .timestamp = parse_timestamp!(.data.date, format: "%+")
+      }
+
+  # Add metadata to Resend logs
+  resend_transform:
+    type: "remap"
+    inputs: ["route_webhooks.resend"]
+    source: |
+      .service_name = "resend"
+      .container = "none"
+      .timestamp = now()
+
+      # Normalize headers to lowercase for case-insensitive access
+      # HTTP headers are case-insensitive per RFC 7230, but VRL treats them as case-sensitive
+      headers_lower = {}
+      for_each(object!(.headers)) -> |key, value| {
+        headers_lower = set!(headers_lower, [downcase(key)], value)
+      }
+
+      # Svix signature verification using normalized headers
+      if !exists(headers_lower."svix-id") || !exists(headers_lower."svix-timestamp") || !exists(headers_lower."svix-signature") {
+        log("Missing Svix signature headers", level: "warn")
+        abort
+      }
+
+      # TODO: Add cryptographic signature verification
+      # For now, we trust that only Resend knows our webhook URL and can send these headers
+      # Full verification requires: HMAC-SHA256(msg_id.msg_timestamp.payload, secret) == signature
+
+      # Parse Resend event
+      if exists(.type) {
+        .event_type = .type
+      }
+      if exists(.created_at) {
+        .timestamp = parse_timestamp!(.created_at, format: "%+")
+      }
+
+  # Generic webhook processing
+  generic_transform:
+    type: "remap"
+    inputs: ["route_webhooks.generic"]
+    source: |
+      .service_name = "generic-webhook"
+      .container = "none"
+      .timestamp = now()
+      .webhook_path = "/webhooks/generic"
+
+      # Normalize headers to lowercase for case-insensitive access
+      headers_lower = {}
+      for_each(object!(.headers)) -> |key, value| {
+        headers_lower = set!(headers_lower, [downcase(key)], value)
+      }
+
+      # Validate Authorization header
+      auth_header = get_env_var!("GENERIC_WEBHOOK_SECRET")
+      if !exists(headers_lower.authorization) || headers_lower.authorization != auth_header {
+        log("Unauthorized generic webhook request", level: "warn")
+        abort
+      }
+
+  add_metadata:
+    type: remap
+    inputs:
+      - auth0_transform
+      - resend_transform
+      - generic_transform
+    source: |
+      .environment = get_env_var("ENVIRONMENT") ?? "production"
+      .host = get_hostname!()
+      .agent_version = get_env_var("VECTOR_VERSION") ?? "unknown"
+
+# Sinks: send logs to destinations
+sinks:
+  # Forward all logs to Grafana Cloud Loki
+  loki:
+    type: loki
+    inputs:
+      - add_metadata
+    endpoint: "${LOKI_ENDPOINT}"
+    encoding:
+      codec: json
+    auth:
+      strategy: basic
+      user: "${LOKI_USERNAME}"
+      password: "${LOKI_PASSWORD}"
+    labels:
+      environment: "{{ environment }}"
+      host: "{{ host }}"
+      service_name: "{{ service_name }}"
+      container: "{{ container }}"
+    remove_label_fields: true
+    batch:
+      timeout_secs: 1
+      max_events: 100
+    buffer:
+      type: disk
+      max_size: 268435488  # 256 MB
+      when_full: block
+    healthcheck:
+      enabled: true
+    request:
+      timeout_secs: 60
+      retry_attempts: 5
+
+  # Vector internal metrics
+  prometheus_exporter:
+    type: prometheus_exporter
+    address: "0.0.0.0:9598"
+    default_namespace: "vector_agent"
+    inputs:
+      - vector_metrics
