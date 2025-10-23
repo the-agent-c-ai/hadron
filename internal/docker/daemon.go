@@ -103,13 +103,15 @@ func WriteDaemonConfig(client ssh.Connection, config *DaemonConfig) error {
 		return fmt.Errorf("failed to create /etc/docker directory: %w", err)
 	}
 
-	// Write config using tee (requires sudo)
-	// Escape single quotes in JSON by replacing with '\''
-	escapedJSON := strings.ReplaceAll(string(jsonBytes), "'", "'\\''")
+	// Write config via temp file (avoids shell escaping issues)
+	tempPath := "/tmp/hadron-daemon.json"
+	if err := client.UploadData(jsonBytes, tempPath); err != nil {
+		return fmt.Errorf("failed to write temp daemon config: %w", err)
+	}
 
-	writeCmd := fmt.Sprintf("echo '%s' | sudo tee %s > /dev/null", escapedJSON, daemonConfigPath)
-	if _, stderr, err := client.Execute(writeCmd); err != nil {
-		return fmt.Errorf("failed to write daemon config: %w (stderr: %s)", err, stderr)
+	moveCmd := fmt.Sprintf("sudo mv %s %s", tempPath, daemonConfigPath)
+	if _, stderr, err := client.Execute(moveCmd); err != nil {
+		return fmt.Errorf("failed to move daemon config: %w (stderr: %s)", err, stderr)
 	}
 
 	return nil

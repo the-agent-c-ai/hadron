@@ -8,9 +8,10 @@ import (
 )
 
 // LoadEnv loads environment variables from the specified .env file.
+// Values in the .env file will override existing environment variables.
 // If the file doesn't exist or cannot be loaded, it logs a fatal error and exits.
 func LoadEnv(path string) error {
-	if err := godotenv.Load(path); err != nil {
+	if err := godotenv.Overload(path); err != nil {
 		log.Fatal().Err(err).Str("path", path).Msg("Failed to load .env file")
 	}
 

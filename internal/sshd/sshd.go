@@ -20,7 +20,11 @@ func SecureConfig() string {
 # NETWORK & BINDING
 # ============================================================================
 
+# Listen on specific interface (change to your server IP, or use 0.0.0.0 for all)
+# ListenAddress 0.0.0.0
 Port 22
+
+# Use IPv4 only (change to 'any' if you need IPv6)
 AddressFamily inet
 
 # ============================================================================
@@ -47,6 +51,15 @@ ChallengeResponseAuthentication no
 KerberosAuthentication no
 GSSAPIAuthentication no
 
+# Disable root login
+# PermitRootLogin no
+
+# Only allow specific users (CHANGE THIS to your username)
+# AllowUsers your_username
+
+# Alternatively, use AllowGroups
+# AllowGroups ssh-users
+
 # ============================================================================
 # CRYPTOGRAPHY - Modern algorithms only
 # ============================================================================
@@ -54,83 +67,125 @@ GSSAPIAuthentication no
 # Key exchange algorithms - strongest first
 KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org
 
-# Ciphers - AES-GCM and ChaCha20 only
-Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com
+# Ciphers - Modern ciphers only (GCM, ChaCha20, CTR for compatibility)
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
 
-# MACs - strongest first
+# MAC algorithms - ETM (Encrypt-then-MAC) only
 MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+
+# Public key algorithms - Ed25519 only
+PubkeyAcceptedAlgorithms sk-ssh-ed25519@openssh.com,ssh-ed25519
+
+# Host key algorithms for client verification
+HostKeyAlgorithms sk-ssh-ed25519-cert-v01@openssh.com,ssh-ed25519-cert-v01@openssh.com,sk-ssh-ed25519@openssh.com,ssh-ed25519
 
 # ============================================================================
 # SECURITY SETTINGS
 # ============================================================================
 
-# Disable X11, agent, TCP forwarding (can enable per-user if needed)
-X11Forwarding no
-AllowAgentForwarding no
-AllowTcpForwarding no
-
-# Disable tunneling
-PermitTunnel no
-
-# Strict modes
+# Strict mode - check permissions on home directory and key files
 StrictModes yes
 
-# Limit authentication attempts
+# Disable X11 forwarding
+X11Forwarding no
+
+# Disable TCP forwarding (uncomment if you need tunneling)
+AllowTcpForwarding no
+AllowStreamLocalForwarding no
+GatewayPorts no
+# XXX is this necessary?
+# PermitTunnel no
+
+# Disable agent forwarding (security risk)
+AllowAgentForwarding no
+
+# Disable .rhosts authentication
+IgnoreRhosts yes
+HostbasedAuthentication no
+
+# Disable privilege separation (already default in modern SSH)
+# UsePrivilegeSeparation sandbox
+
+# Prevent user environment modifications
+PermitUserEnvironment no
+
+# ============================================================================
+# SESSION LIMITS
+# ============================================================================
+
+# Login grace time - disconnect if no successful auth
+LoginGraceTime 30
+
+# Maximum authentication attempts before disconnect
 MaxAuthTries 3
+
+# Maximum concurrent sessions per connection
 MaxSessions 5
 
-# Connection timeouts
-LoginGraceTime 20
+# Maximum concurrent unauthenticated connections
+MaxStartups 3:50:10
+
+# Client alive interval (disconnect idle clients)
 ClientAliveInterval 300
 ClientAliveCountMax 2
 
-# Disable rhosts
-IgnoreRhosts yes
-HostbasedAuthentication no
 
 # ============================================================================
 # LOGGING
 # ============================================================================
 
-# Verbose logging for security auditing
+# Log level - VERBOSE logs key fingerprints (useful for auditing)
 LogLevel VERBOSE
+
+# Log to AUTH facility
 SyslogFacility AUTH
-
-# ============================================================================
-# PROTOCOL
-# ============================================================================
-
-# Protocol 2 only (default in modern OpenSSH, but explicit is better)
-
-# ============================================================================
-# BANNER & MOTD
-# ============================================================================
-
-# Disable banner (information disclosure)
-Banner none
-
-# Don't print MOTD (keep it clean)
-PrintMotd no
-
-# ============================================================================
-# SUBSYSTEMS
-# ============================================================================
-
-# SFTP subsystem (needed for scp/sftp)
-Subsystem sftp /usr/lib/openssh/sftp-server
 
 # ============================================================================
 # MISC
 # ============================================================================
 
-# Compression (disable to prevent potential attacks, or use delayed)
+# Disable banner (information disclosure)
+Banner none
+
+# Disable printing of /etc/motd
+PrintMotd no
+
+# Disable last login info
+PrintLastLog yes
+
+# Use PAM (needed for some systems, disable if you don't need it)
+UsePAM yes
+
+# Disable DNS lookups (faster connections, but breaks hostname-based rules)
+UseDNS no
+
+# TCP keep-alive messages
+TCPKeepAlive yes
+
+# Compression - disable or delay for security
 Compression no
 
-# Use kernel sandbox for privilege separation
-UsePrivilegeSeparation sandbox
+# Subsystems - only SFTP if needed
+Subsystem sftp /usr/lib/openssh/sftp-server
 
-# DNS checks (can slow down login, set to 'no' if needed)
-UseDNS no
+# ============================================================================
+# HARDENING: Uncomment based on needs
+# ============================================================================
+
+# Chroot SFTP users to their home directory
+# Match Group sftp-only
+#     ChrootDirectory /home/%u
+#     ForceCommand internal-sftp
+#     AllowTcpForwarding no
+#     X11Forwarding no
+
+# Limit SSH to specific source IPs
+# Match Address 192.168.1.0/24
+#     AllowUsers your_username
+
+# Two-factor authentication (if using Google Authenticator or similar)
+# AuthenticationMethods publickey,keyboard-interactive
+
 `
 }
 
@@ -146,12 +201,18 @@ func Apply(client ssh.Connection) error {
 		return fmt.Errorf("failed to backup sshd_config: %w (stderr: %s)", err, stderr)
 	}
 
-	// Write new config
-	writeCmd := fmt.Sprintf("echo '%s' | sudo tee %s > /dev/null", config, sshdConfigPath)
+	// Write new config via temp file (avoids shell escaping issues)
+	tempPath := "/tmp/hadron-sshd_config"
+	if err := client.UploadData([]byte(config), tempPath); err != nil {
+		return fmt.Errorf("failed to write temp sshd_config: %w", err)
+	}
 
-	_, stderr, err = client.Execute(writeCmd)
+	// Move temp file to final location with sudo
+	moveCmd := fmt.Sprintf("sudo mv %s %s", tempPath, sshdConfigPath)
+
+	_, stderr, err = client.Execute(moveCmd)
 	if err != nil {
-		return fmt.Errorf("failed to write sshd_config: %w (stderr: %s)", err, stderr)
+		return fmt.Errorf("failed to move sshd_config: %w (stderr: %s)", err, stderr)
 	}
 
 	// Test configuration before restarting

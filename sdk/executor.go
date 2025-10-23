@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -58,12 +59,17 @@ func newExecutor(plan *Plan) *executor {
 }
 
 // execute performs the actual deployment.
-func (e *executor) execute() error {
+func (e *executor) execute(ctx context.Context) error {
 	defer func() {
 		if err := e.sshPool.CloseAll(); err != nil {
 			e.plan.logger.Warn().Err(err).Msg("Failed to close SSH connections")
 		}
 	}()
+
+	// Check if context is already cancelled
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("execution cancelled before start: %w", err)
+	}
 
 	e.plan.logger.Info().Msg("Starting deployment")
 

@@ -7,6 +7,28 @@ import (
 	"strings"
 )
 
+const (
+	// opCLI is the 1Password CLI command name.
+	opCLI = "op"
+)
+
+// AuthenticateOp pre-authenticates with 1Password CLI to establish a session.
+// This should be called before making parallel GetSecret/GetDocument calls
+// to prevent multiple biometric authentication prompts.
+//
+// Uses `op whoami` which triggers authentication if needed and returns
+// account information if already authenticated.
+func AuthenticateOp(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx, opCLI, "whoami")
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to authenticate with 1Password: %w\nOutput: %s", err, string(output))
+	}
+
+	return nil
+}
+
 // GetDocument retrieves a document from 1Password using a document reference.
 // Reference format: "op://vault/item"
 //
@@ -46,7 +68,7 @@ func GetDocument(ctx context.Context, reference string) ([]byte, error) {
 
 	// Use op document get for retrieving document content
 	//nolint:gosec // G204: Variables are from parsed/validated reference, passed as separate args (no shell injection)
-	cmd := exec.CommandContext(ctx, "op", "document", "get", item, "--vault", vault)
+	cmd := exec.CommandContext(ctx, opCLI, "document", "get", item, "--vault", vault)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -66,7 +88,7 @@ func GetDocument(ctx context.Context, reference string) ([]byte, error) {
 // Example:
 //
 //	password, err := GetSecret(ctx, "op://Production/database/password")
-//	token, err := GetSecret(ctx, "op://Security (build)/ghcr.io-rw/password")
+//	token, err := GetSecret(ctx, "op://Security (build)/deploy.registry.rw/password")
 //
 // Uses the 1Password CLI (`op item get`) which supports:
 // - Interactive authentication via `op signin` (local development)
@@ -103,7 +125,7 @@ func GetSecret(ctx context.Context, reference string) (string, error) {
 	// Account can be specified via OP_ACCOUNT environment variable if needed
 	// --reveal flag is required to get actual concealed field values (passwords, tokens, etc.)
 	//nolint:gosec // G204: Variables are from parsed/validated reference, passed as separate args (no shell injection)
-	cmd := exec.CommandContext(ctx, "op", "item", "get", item, "--vault", vault, "--fields", field, "--reveal")
+	cmd := exec.CommandContext(ctx, opCLI, "item", "get", item, "--vault", vault, "--fields", field, "--reveal")
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {

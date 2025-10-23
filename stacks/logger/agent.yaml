@@ -42,6 +42,10 @@ sources:
       - "vector"
     auto_partial_merge: true
 
+  # Vector internal metrics
+  vector_metrics:
+    type: internal_metrics
+
 # ============================================================================
 # TRANSFORMS - Filter noise, keep only what matters
 # ============================================================================
@@ -53,7 +57,7 @@ transforms:
     inputs:
       - auth_logs
     condition: |
-      contains(string!(.message), "sshd") || 
+      contains(string!(.message), "sshd") ||
       contains(string!(.message), "sudo") ||
       contains(string!(.message), "COMMAND=") ||
       contains(string!(.message), "authentication failure") ||
@@ -65,6 +69,7 @@ transforms:
       - auth_security
     source: |
       .service_name = "auth"
+      .container = "none"
 
   # UFW: Only log blocked connections, not all traffic
   ufw_blocks_only:
@@ -79,6 +84,7 @@ transforms:
       - ufw_blocks_only
     source: |
       .service_name = "firewall"
+      .container = "none"
 
   # Containerd: Only errors and above
   containerd_errors:
@@ -86,8 +92,8 @@ transforms:
     inputs:
       - containerd_logs
     condition: |
-      to_int(.PRIORITY) <= 4 ||
-      match(string!(.message), r'(error|fatal|panic|failed)', case_sensitive: false)
+      to_int!(.PRIORITY) <= 4 ||
+      match(string!(.message), r'(?i)(error|fatal|panic|failed)')
 
   containerd_metadata:
     type: remap
@@ -95,13 +101,14 @@ transforms:
       - containerd_errors
     source: |
       .service_name = "containerd"
+      .container = "none"
 
   # System journal: Only errors and above (priority 4 or lower)
   journal_errors_only:
     type: filter
     inputs:
       - system_journal
-    condition: to_int(.PRIORITY) <= 4
+    condition: to_int!(.PRIORITY) <= 4
 
   journal_metadata:
     type: remap
@@ -109,6 +116,7 @@ transforms:
       - journal_errors_only
     source: |
       .service_name = "journal"
+      .container = "none"
 
   # Parse and enrich Docker logs
   parse_docker_logs:
@@ -122,6 +130,8 @@ transforms:
       # Extract container metadata
       if exists(.container_name) {
         .container = .container_name
+      } else {
+        .container = "none"
       }
       if exists(.container_id) {
         .container_id = slice!(.container_id, start: 0, end: 12)
@@ -186,7 +196,7 @@ sinks:
       environment: "{{ environment }}"
       host: "{{ host }}"
       service_name: "{{ service_name }}"
-      container: '{{ container | default: value = "none" }}'
+      container: "{{ container }}"
     remove_label_fields: true
     batch:
       timeout_secs: 1
@@ -204,5 +214,7 @@ sinks:
   # Vector internal metrics
   prometheus_exporter:
     type: prometheus_exporter
+    inputs:
+      - vector_metrics
     address: "0.0.0.0:9598"
     default_namespace: "vector_agent"

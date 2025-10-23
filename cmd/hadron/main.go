@@ -97,6 +97,7 @@ func deploy(c *cli.Context) error {
 	}
 
 	var planDir string
+
 	var args []string
 
 	if stat.IsDir() {
@@ -136,6 +137,7 @@ func destroy(c *cli.Context) error {
 	}
 
 	var planDir string
+
 	var args []string
 
 	if stat.IsDir() {

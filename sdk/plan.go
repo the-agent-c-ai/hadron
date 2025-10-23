@@ -20,7 +20,6 @@ type Plan struct {
 	volumes    []*Volume
 	containers []*Container
 	logger     zerolog.Logger
-	ctx        context.Context //nolint:containedctx // Context is used for plan execution lifecycle
 }
 
 // NewPlan creates a new deployment plan with the given name.
@@ -31,15 +30,7 @@ func NewPlan(name string) *Plan {
 		networks:   make([]*Network, 0),
 		volumes:    make([]*Volume, 0),
 		containers: make([]*Container, 0),
-		ctx:        context.Background(),
 	}
-}
-
-// WithContext sets the context for the plan.
-func (p *Plan) WithContext(ctx context.Context) *Plan {
-	p.ctx = ctx
-
-	return p
 }
 
 // WithLogger sets the logger for the plan.
@@ -90,10 +81,11 @@ func (p *Plan) Container(name string) *ContainerBuilder {
 }
 
 // Execute executes the plan by deploying all resources to their respective hosts.
-func (p *Plan) Execute() error {
+// Execute runs the plan with the given context.
+func (p *Plan) Execute(ctx context.Context) error {
 	exec := newExecutor(p)
 
-	return exec.execute()
+	return exec.execute(ctx)
 }
 
 // DryRun shows what would be deployed without actually deploying.

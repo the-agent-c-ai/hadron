@@ -1,3 +1,4 @@
+// Package logger provides Vector log collection and forwarding infrastructure.
 package logger
 
 import (
@@ -10,6 +11,7 @@ import (
 //go:embed agent.yaml
 var agentYAML string
 
+// Config contains configuration for the Vector logging stack.
 type Config struct {
 	Image        string
 	LogLevel     string
@@ -19,6 +21,9 @@ type Config struct {
 	LokiPassword string
 }
 
+// Logger deploys a Vector agent container for log collection and forwarding.
+// It creates an isolated network, volume for buffering, and configures Vector
+// to collect Docker container logs and forward them to Loki.
 func Logger(plan *sdk.Plan, host *sdk.Host, cnf *Config) {
 	// vector: Isolated observability network for Vector (outbound-only + docker socket)
 	// Segregated to limit lateral movement from compromised observability components

@@ -150,9 +150,9 @@ func (c *client) resolveConfig() error {
 	}
 
 	// Resolve User: endpoint user takes precedence, then SSH config, then current user
-	user := ssh_config.Get(c.endpoint, "User")
-	if user == "" && endpointUser != "" {
-		user = endpointUser
+	user := endpointUser
+	if user == "" {
+		user = ssh_config.Get(c.endpoint, "User")
 	}
 
 	if user == "" {

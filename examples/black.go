@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -120,6 +121,8 @@ func main() {
 		Build()
 
 	// Execute plan based on environment
+	ctx := context.Background()
+
 	var err error
 
 	switch {
@@ -134,7 +137,7 @@ func main() {
 			log.Fatal().Err(err).Msg("Dry run failed")
 		}
 	default:
-		err = plan.Execute()
+		err = plan.Execute(ctx)
 		if err != nil {
 			log.Fatal().Err(err).Msg("Deployment failed")
 		}

@@ -114,10 +114,15 @@ func setupDockerRepository(client ssh.Connection) error {
 		arch, dockerGPGPath, codename,
 	)
 
-	// Write repository file
-	writeRepoCmd := fmt.Sprintf("echo '%s' | sudo tee %s > /dev/null", repoLine, dockerRepoFile)
+	// Write repository file via temp file
+	tempPath := "/tmp/hadron-docker.list"
+	if err := client.UploadData([]byte(repoLine), tempPath); err != nil {
+		return fmt.Errorf("%w: %w", ErrDockerRepoWrite, err)
+	}
 
-	_, stderr, err := client.Execute(writeRepoCmd)
+	moveCmd := fmt.Sprintf("sudo mv %s %s", tempPath, dockerRepoFile)
+
+	_, stderr, err := client.Execute(moveCmd)
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrDockerRepoWrite, stderr)
 	}

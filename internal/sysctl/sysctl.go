@@ -116,6 +116,14 @@ vm.swappiness = 10
 # Increase dirty page cache flush interval (better I/O performance)
 vm.dirty_ratio = 10
 vm.dirty_background_ratio = 5
+
+# ============================================================================
+# Caddy / http3
+# ============================================================================
+
+# UDP buffer sizes for QUIC/HTTP3
+net.core.rmem_max = 7500000
+net.core.wmem_max = 7500000
 `
 }
 
@@ -123,12 +131,18 @@ vm.dirty_background_ratio = 5
 func Apply(client ssh.Connection) error {
 	config := SecurityConfig()
 
-	// Write config file
-	writeCmd := fmt.Sprintf("echo '%s' | sudo tee %s > /dev/null", config, sysctlConfigPath)
+	// Write to temp file first (SFTP can't write directly to /etc/ as non-root)
+	tempPath := "/tmp/hadron-sysctl.conf"
+	if err := client.UploadData([]byte(config), tempPath); err != nil {
+		return fmt.Errorf("failed to write temp sysctl config: %w", err)
+	}
 
-	_, stderr, err := client.Execute(writeCmd)
+	// Move temp file to final location with sudo
+	moveCmd := fmt.Sprintf("sudo mv %s %s", tempPath, sysctlConfigPath)
+
+	_, stderr, err := client.Execute(moveCmd)
 	if err != nil {
-		return fmt.Errorf("failed to write sysctl config: %w (stderr: %s)", err, stderr)
+		return fmt.Errorf("failed to move sysctl config: %w (stderr: %s)", err, stderr)
 	}
 
 	// Apply configuration immediately

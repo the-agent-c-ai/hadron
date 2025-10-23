@@ -240,16 +240,29 @@ func (e *Executor) PullImage(client ssh.Connection, image string) (bool, error) 
 
 // RunContainer runs a Docker container on the remote host.
 func (e *Executor) RunContainer(client ssh.Connection, opts ContainerRunOptions) error {
-	// Handle env file if specified
-	var remoteEnvFile string
+	// Collect all env files to pass to docker run
+	var envFiles []string
 
+	// Handle user-provided env file if specified
 	if opts.EnvFile != "" {
 		remotePath, err := e.uploadEnvFile(client, opts.EnvFile)
 		if err != nil {
 			return fmt.Errorf("failed to upload env file: %w", err)
 		}
 
-		remoteEnvFile = remotePath
+		envFiles = append(envFiles, remotePath)
+	}
+
+	// Generate and upload env file from EnvVars map
+	if len(opts.EnvVars) > 0 {
+		remotePath, err := e.uploadEnvVarsFile(client, opts.EnvVars)
+		if err != nil {
+			return fmt.Errorf("failed to upload env vars file: %w", err)
+		}
+
+		if remotePath != "" {
+			envFiles = append(envFiles, remotePath)
+		}
 	}
 
 	cmd := "docker run -d"
@@ -310,14 +323,9 @@ func (e *Executor) RunContainer(client ssh.Connection, opts ContainerRunOptions)
 		cmd += " --tmpfs " + tmpfsStr
 	}
 
-	// Environment file (use remote path)
-	if remoteEnvFile != "" {
-		cmd += " --env-file " + remoteEnvFile
-	}
-
-	// Environment variables
-	for k, v := range opts.EnvVars {
-		cmd += fmt.Sprintf(" -e %s=%s", k, v)
+	// Environment files (both user-provided and generated from EnvVars)
+	for _, envFile := range envFiles {
+		cmd += " --env-file " + envFile
 	}
 
 	// Restart policy
@@ -456,159 +464,171 @@ type VolumeMount struct {
 	Mode   string
 }
 
-// uploadEnvFile uploads a local env file to the remote host if it doesn't already exist.
+// uploadContentAddressable uploads data to a content-addressable location on the remote host.
+// Uses SHA256 hash of data as filename. Checks if file exists before uploading.
+// Optional permissions parameter (defaults to 0600 if not provided).
 // Returns the remote file path.
-func (e *Executor) uploadEnvFile(client ssh.Connection, localPath string) (string, error) {
-	// 1. Hash the local file
-	fileHash, err := hash.File(localPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to hash env file: %w", err)
+func (e *Executor) uploadContentAddressable(
+	client ssh.Connection,
+	data []byte,
+	permissions ...os.FileMode,
+) (string, error) {
+	// Determine permissions (default to PermSecretFile)
+	perm := PermSecretFile
+	if len(permissions) > 0 {
+		perm = permissions[0]
 	}
 
+	// 1. Hash the data
+	dataHashRaw := sha256.Sum256(data)
+	dataHash := hex.EncodeToString(dataHashRaw[:])
+
 	// 2. Build remote path
-	remotePath := "/var/lib/hadron/env/" + fileHash
+	remotePath := "/var/lib/hadron/files/" + dataHash
 
 	// 3. Check if file exists on remote
 	checkCmd := fmt.Sprintf("test -f %s && echo %s || echo %s", remotePath, checkResultExists, checkResultMissing)
 
 	stdout, _, err := client.Execute(checkCmd)
 	if err != nil {
-		return "", fmt.Errorf("failed to check if env file exists on remote: %w", err)
+		return "", fmt.Errorf("failed to check if file exists on remote: %w", err)
 	}
 
 	if strings.TrimSpace(stdout) == checkResultExists {
-		e.logger.Debug().Str("remote_path", remotePath).Msg("Env file already exists on remote")
+		e.logger.Debug().Str("remote_path", remotePath).Msg("File already exists on remote")
 
 		return remotePath, nil
 	}
 
-	// 4. File doesn't exist, upload it via SCP
-	e.logger.Debug().Str("local_path", localPath).Str("remote_path", remotePath).Msg("Uploading env file")
+	// 4. File doesn't exist, upload it
+	e.logger.Debug().Str("remote_path", remotePath).Int("size", len(data)).Msg("Uploading file")
 
 	// Ensure remote directory exists
-	mkdirCmd := "mkdir -p /var/lib/hadron/env"
+	mkdirCmd := "mkdir -p /var/lib/hadron/files"
 	if _, _, err := client.Execute(mkdirCmd); err != nil {
-		return "", fmt.Errorf("failed to create remote env directory: %w", err)
+		return "", fmt.Errorf("failed to create remote files directory: %w", err)
 	}
 
-	// Upload file
-	if err := client.UploadFile(localPath, remotePath); err != nil {
-		return "", fmt.Errorf("failed to upload env file: %w", err)
+	// Upload data (sets 0600 by default via UploadData)
+	if err := client.UploadData(data, remotePath); err != nil {
+		return "", fmt.Errorf("failed to upload file: %w", err)
 	}
 
-	// Set permissions (owner read/write only)
-	chmodCmd := "chmod 600 " + remotePath
-	if _, _, err := client.Execute(chmodCmd); err != nil {
-		return "", fmt.Errorf("failed to set env file permissions: %w", err)
+	// Override permissions if not PermSecretFile
+	if perm != PermSecretFile {
+		chmodCmd := fmt.Sprintf("chmod %o %s", perm, remotePath)
+		if _, _, err := client.Execute(chmodCmd); err != nil {
+			return "", fmt.Errorf("failed to set file permissions: %w", err)
+		}
 	}
 
-	e.logger.Info().Str("remote_path", remotePath).Msg("Env file uploaded")
+	e.logger.Info().Str("remote_path", remotePath).Msg("File uploaded")
 
 	return remotePath, nil
+}
+
+// uploadEnvFile uploads a local env file to the remote host if it doesn't already exist.
+// Returns the remote file path.
+func (e *Executor) uploadEnvFile(client ssh.Connection, localPath string) (string, error) {
+	// Read local file
+	// #nosec G304 -- localPath is controlled by plan author, not external user input
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read env file: %w", err)
+	}
+
+	// Upload using content-addressable storage (0600 permissions for secrets)
+	return e.uploadContentAddressable(client, data)
+}
+
+// uploadEnvVarsFile generates an env file from environment variables and uploads it.
+// Uses content-addressable storage (content hash) to avoid duplicates.
+// Returns the remote file path, or empty string if no env vars.
+func (e *Executor) uploadEnvVarsFile(client ssh.Connection, envVars map[string]string) (string, error) {
+	if len(envVars) == 0 {
+		return "", nil
+	}
+
+	// Generate env file content
+	var content strings.Builder
+
+	for k, v := range envVars {
+		// Docker run --env-file format: KEY=VALUE (no quotes - they become part of the value)
+		// Replace actual newlines with literal \n text (application must convert back)
+		escapedValue := strings.ReplaceAll(v, "\n", "\\n")
+
+		_, _ = content.WriteString(k)
+		_, _ = content.WriteString("=")
+		_, _ = content.WriteString(escapedValue)
+		_, _ = content.WriteString("\n")
+	}
+
+	// Upload using content-addressable storage (0600 permissions for secrets)
+	return e.uploadContentAddressable(client, []byte(content.String()))
 }
 
 // UploadMount uploads a local file or directory to the remote host if it doesn't already exist.
 // Returns the remote path.
 func (e *Executor) UploadMount(client ssh.Connection, localPath string) (string, error) {
-	// 1. Hash the local file/directory
-	pathHash, err := hash.Path(localPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to hash mount path: %w", err)
-	}
-
-	// 2. Build remote path
-	remotePath := "/var/lib/hadron/mounts/" + pathHash
-
-	// 3. Check if path exists on remote
-	checkCmd := fmt.Sprintf("test -e %s && echo %s || echo %s", remotePath, checkResultExists, checkResultMissing)
-
-	stdout, _, err := client.Execute(checkCmd)
-	if err != nil {
-		return "", fmt.Errorf("failed to check if mount exists on remote: %w", err)
-	}
-
-	if strings.TrimSpace(stdout) == checkResultExists {
-		e.logger.Debug().Str("remote_path", remotePath).Msg("Mount already exists on remote")
-
-		return remotePath, nil
-	}
-
-	// 4. Path doesn't exist, upload it
-	e.logger.Debug().Str("local_path", localPath).Str("remote_path", remotePath).Msg("Uploading mount")
-
-	// Ensure remote directory exists
-	mkdirCmd := "mkdir -p /var/lib/hadron/mounts"
-	if _, _, err := client.Execute(mkdirCmd); err != nil {
-		return "", fmt.Errorf("failed to create remote mounts directory: %w", err)
-	}
-
 	// Check if local path is a file or directory
-
 	info, err := os.Stat(localPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to stat local path: %w", err)
 	}
 
 	if info.IsDir() {
-		// Upload directory recursively using tar
+		// Directories: use path-based hash (includes directory structure)
+		pathHash, err := hash.Path(localPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to hash mount path: %w", err)
+		}
+
+		remotePath := "/var/lib/hadron/files/" + pathHash
+
+		// Check if directory exists on remote
+		checkCmd := fmt.Sprintf("test -e %s && echo %s || echo %s", remotePath, checkResultExists, checkResultMissing)
+
+		stdout, _, err := client.Execute(checkCmd)
+		if err != nil {
+			return "", fmt.Errorf("failed to check if mount exists on remote: %w", err)
+		}
+
+		if strings.TrimSpace(stdout) == checkResultExists {
+			e.logger.Debug().Str("remote_path", remotePath).Msg("Mount already exists on remote")
+
+			return remotePath, nil
+		}
+
+		// Upload directory recursively
+		e.logger.Debug().Str("local_path", localPath).Str("remote_path", remotePath).Msg("Uploading mount directory")
+
 		if err := e.uploadDirectory(client, localPath, remotePath); err != nil {
 			return "", fmt.Errorf("failed to upload directory: %w", err)
 		}
-	} else {
-		// Upload single file
-		// Note: UploadFile already sets permissions to 644
-		if err := client.UploadFile(localPath, remotePath); err != nil {
-			return "", fmt.Errorf("failed to upload file: %w", err)
-		}
+
+		e.logger.Info().Str("remote_path", remotePath).Msg("Mount uploaded")
+
+		return remotePath, nil
 	}
 
-	e.logger.Info().Str("remote_path", remotePath).Msg("Mount uploaded")
+	// Single file: use content-addressable upload with PermPublicFile permissions for container readability
+	// #nosec G304 -- localPath is controlled by plan author, not external user input
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read file: %w", err)
+	}
 
-	return remotePath, nil
+	return e.uploadContentAddressable(client, data, PermPublicFile)
 }
 
 // UploadDataMount uploads raw data as a file to the remote host if it doesn't already exist.
 // Uses content-addressable storage (SHA256 hash) to avoid duplicates.
 // Returns the remote path.
 func (e *Executor) UploadDataMount(client ssh.Connection, data []byte) (string, error) {
-	// 1. Hash the data
-	dataHashRaw := sha256.Sum256(data)
-	dataHash := hex.EncodeToString(dataHashRaw[:])
-
-	// 2. Build remote path
-	remotePath := "/var/lib/hadron/mounts/" + dataHash
-
-	// 3. Check if file exists on remote
-	checkCmd := fmt.Sprintf("test -e %s && echo %s || echo %s", remotePath, checkResultExists, checkResultMissing)
-
-	stdout, _, err := client.Execute(checkCmd)
-	if err != nil {
-		return "", fmt.Errorf("failed to check if data mount exists on remote: %w", err)
-	}
-
-	if strings.TrimSpace(stdout) == checkResultExists {
-		e.logger.Debug().Str("remote_path", remotePath).Msg("Data mount already exists on remote")
-
-		return remotePath, nil
-	}
-
-	// 4. File doesn't exist, upload it
-	e.logger.Debug().Str("remote_path", remotePath).Int("size", len(data)).Msg("Uploading data mount")
-
-	// Ensure remote directory exists
-	mkdirCmd := "mkdir -p /var/lib/hadron/mounts"
-	if _, _, err := client.Execute(mkdirCmd); err != nil {
-		return "", fmt.Errorf("failed to create remote mounts directory: %w", err)
-	}
-
-	// Upload data directly (sets 0600 permissions automatically)
-	if err := client.UploadData(data, remotePath); err != nil {
-		return "", fmt.Errorf("failed to upload data: %w", err)
-	}
-
-	e.logger.Info().Str("remote_path", remotePath).Msg("Data mount uploaded")
-
-	return remotePath, nil
+	// Upload using content-addressable storage with 0644 permissions
+	// This allows non-root container users to read mounted files
+	// TODO(security): Files are world-readable on host. Future: use ACLs or init containers to set proper ownership
+	return e.uploadContentAddressable(client, data, PermPublicFile)
 }
 
 // uploadDirectory uploads a directory to the remote host.

@@ -1,3 +1,4 @@
+// Package proxy provides Caddy reverse proxy infrastructure with automatic HTTPS.
 package proxy
 
 import (
@@ -10,6 +11,7 @@ import (
 //go:embed Caddyfile
 var caddyfile string
 
+// Config contains configuration for the Caddy reverse proxy.
 type Config struct {
 	Image         string
 	LogLevel      string
@@ -20,6 +22,9 @@ type Config struct {
 	ReverseHealth string
 }
 
+// Proxy deploys a Caddy reverse proxy container with automatic HTTPS.
+// It creates volumes for TLS certificates and runtime config, and configures
+// Caddy to reverse proxy to the specified dependency container.
 func Proxy(plan *sdk.Plan, depends *sdk.Container, network *sdk.Network, host *sdk.Host, cnf *Config) {
 	// Caddy data (TLS certificates from Let's Encrypt)
 	caddyData := plan.Volume("caddy-data").
@@ -43,8 +48,8 @@ func Proxy(plan *sdk.Plan, depends *sdk.Container, network *sdk.Network, host *s
 		Env("DOMAIN", cnf.Domain).
 		Env("EMAIL", cnf.Email).
 		Env("REVERSE", depends.NetworkAlias()).
-		Env("REVERSE_PORT", depends.NetworkAlias()).
-		Env("REVERSE_HEALTH", depends.NetworkAlias()).
+		Env("REVERSE_PORT", "3002").
+		Env("REVERSE_HEALTH", "/ping").
 		Restart("unless-stopped").
 		ReadOnly().
 		CapDrop("ALL").
@@ -53,10 +58,12 @@ func Proxy(plan *sdk.Plan, depends *sdk.Container, network *sdk.Network, host *s
 		DependsOn(depends). // Wait for SCIM to be healthy
 		Port("80:80").      // HTTP (redirects to HTTPS)
 		Port("443:443").    // HTTPS
+		Memory("256m").
+		MemoryReservation("128m").
+		CPUShares(512).
 		HealthCheck(sdk.TCPCheck(443).
 			WithTimeout(30 * time.Second).
 			WithInterval(30 * time.Second).
 			WithRetries(3)).
 		Build()
-
 }
