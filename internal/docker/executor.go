@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/rs/zerolog"
@@ -552,10 +553,18 @@ func (e *Executor) uploadEnvVarsFile(client ssh.Connection, envVars map[string]s
 	// Generate env file content
 	var content strings.Builder
 
-	for k, v := range envVars {
+	// Sort keys for deterministic output (consistent hashing)
+	keys := make([]string, 0, len(envVars))
+	for k := range envVars {
+		keys = append(keys, k)
+	}
+
+	sort.Strings(keys)
+
+	for _, k := range keys {
 		// Docker run --env-file format: KEY=VALUE (no quotes - they become part of the value)
 		// Replace actual newlines with literal \n text (application must convert back)
-		escapedValue := strings.ReplaceAll(v, "\n", "\\n")
+		escapedValue := strings.ReplaceAll(envVars[k], "\n", "\\n")
 
 		_, _ = content.WriteString(k)
 		_, _ = content.WriteString("=")
