@@ -3,7 +3,10 @@ package testutil
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -15,8 +18,19 @@ import (
 const (
 	sshWaitRetries   = 30
 	sshRetryDelaySec = 1
-	testKeyBasePath  = "/Users/dmp/Projects/go/the-agent-c-ai/hadron/internal/testutil/.ssh/test_key"
 )
+
+// getTestKeyPath returns the absolute path to the test SSH key.
+func getTestKeyPath() string {
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		panic("failed to get caller information")
+	}
+
+	dir := filepath.Dir(filename)
+
+	return filepath.Join(dir, "ssh", "test_key")
+}
 
 // SSHContainer represents a test container with SSH access.
 type SSHContainer struct {
@@ -39,9 +53,10 @@ func StartDebianSSHContainer(t *testing.T) *SSHContainer {
 	containerName := fmt.Sprintf("hadron-test-debian-%d", time.Now().Unix())
 
 	// Read test SSH public key
-	pubKeyPath := testKeyBasePath + ".pub"
+	testKeyPath := getTestKeyPath()
+	pubKeyPath := testKeyPath + ".pub"
 
-	pubKeyBytes, err := exec.Command("cat", pubKeyPath).Output()
+	pubKeyBytes, err := os.ReadFile(pubKeyPath) //nolint:gosec // Test key path from source file location
 	if err != nil {
 		t.Fatalf("failed to read test SSH public key: %v", err)
 	}
@@ -107,14 +122,37 @@ func StartDebianSSHContainer(t *testing.T) *SSHContainer {
 		t.Fatalf("SSH port never became ready on %s:22", containerIP)
 	}
 
-	// Scan and add host keys to user's known_hosts (will cleanup later)
-	keyscanCmd := exec.Command( //nolint:gosec // containerIP from Docker inspect
-		"sh",
-		"-c",
-		fmt.Sprintf("ssh-keyscan -H %s >> ~/.ssh/known_hosts 2>/dev/null", containerIP),
-	)
-	if err := keyscanCmd.Run(); err != nil {
-		t.Logf("warning: failed to add host key: %v", err)
+	// Ensure ~/.ssh directory exists and scan host keys
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("failed to get home directory: %v", err)
+	}
+
+	sshDir := filepath.Join(homeDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil { //nolint:revive // Standard SSH directory permissions
+		t.Fatalf("failed to create .ssh directory: %v", err)
+	}
+
+	knownHostsPath := filepath.Join(sshDir, "known_hosts")
+
+	// Scan and add host keys to known_hosts
+	keyscanCmd := exec.Command("ssh-keyscan", "-H", containerIP) //nolint:gosec // containerIP from Docker inspect
+
+	keyscanOutput, err := keyscanCmd.Output()
+	if err != nil {
+		t.Fatalf("failed to scan host key: %v", err)
+	}
+
+	// Append to known_hosts
+	//nolint:gosec,revive // Path from os.UserHomeDir, standard SSH file permissions
+	knownHostsFile, err := os.OpenFile(knownHostsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("failed to open known_hosts: %v", err)
+	}
+	defer knownHostsFile.Close()
+
+	if _, err := knownHostsFile.Write(keyscanOutput); err != nil {
+		t.Fatalf("failed to write to known_hosts: %v", err)
 	}
 
 	// Cleanup: remove this host from known_hosts when test ends
@@ -123,9 +161,16 @@ func StartDebianSSHContainer(t *testing.T) *SSHContainer {
 	})
 
 	// Add test key to SSH agent for this session
-	addKeyCmd := exec.Command("ssh-add", testKeyBasePath)
-	if err := addKeyCmd.Run(); err != nil {
-		t.Logf("warning: failed to add test key to agent (may already be added): %v", err)
+	// First, ensure the private key has correct permissions (SSH requires 0600)
+	if err := os.Chmod(testKeyPath, 0o600); err != nil { //nolint:revive // Standard SSH key permissions
+		t.Fatalf("failed to set test key permissions: %v", err)
+	}
+
+	addKeyCmd := exec.Command("ssh-add", testKeyPath) //nolint:gosec // Test key path from source file location
+
+	addKeyOutput, err := addKeyCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to add test key to agent: %v\noutput: %s", err, addKeyOutput)
 	}
 
 	// Wait for SSH to be ready with retries
