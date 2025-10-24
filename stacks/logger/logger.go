@@ -93,7 +93,6 @@ func Logger(plan *sdk.Plan, host *sdk.Host, vectorNet *sdk.Network, cnf *Config)
 											Volume("/var/log/ufw.log", "/host/ufw.log", "ro").
 			// Docker socket (read-only)
 			Volume("/var/log/auth.log", "/host/auth.log", "ro")
-		// Docker socket (read-only)
 	}
 
 	return con.Build()

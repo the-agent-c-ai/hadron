@@ -312,6 +312,30 @@ Hadron reads from `.env` for secrets and configuration:
 
 Plans use `os.Getenv()` to read host configuration and `EnvFile(".env")` to inject environment variables into containers.
 
+### SSH Host Key Verification
+
+Hadron supports two methods for SSH host key verification:
+
+**1. Known Hosts (Default)**
+```go
+// Uses ~/.ssh/known_hosts for verification
+host := plan.Host("user@example.com").Build()
+```
+
+**2. Fingerprint-Based (For Automation)**
+```go
+// For CI/CD and automated deployments where ~/.ssh/known_hosts is not practical
+// Get fingerprint: ssh-keyscan -t ed25519 hostname | ssh-keygen -lf -
+host := plan.Host("user@example.com").
+    Fingerprint("SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8").
+    Build()
+```
+
+Fingerprint verification is recommended for:
+- CI/CD pipelines with ephemeral build agents
+- Terraform-style infrastructure-as-code deployments
+- Any scenario where the fingerprint can be securely stored in configuration
+
 ## CLI Usage
 
 ```bash

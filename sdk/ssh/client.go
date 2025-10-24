@@ -44,22 +44,25 @@ type Connection interface {
 // client represents an SSH client with connection pooling.
 // This type is intentionally unexported - use Pool.GetClient() to obtain connections.
 type client struct {
-	endpoint   string
-	hostname   string
-	user       string
-	port       int
-	sshClient  *ssh.Client
-	sftpClient *sftp.Client
-	agentConn  net.Conn
-	mu         sync.Mutex
+	endpoint       string
+	hostname       string
+	user           string
+	port           int
+	sshClient      *ssh.Client
+	sftpClient     *sftp.Client
+	agentConn      net.Conn
+	sshFingerprint string
+	mu             sync.Mutex
 }
 
 // newClient creates a new SSH client for the given endpoint.
 // The endpoint can be an IP address, hostname, or SSH config alias.
 // Connection parameters (User, Port, Hostname) are resolved from ~/.ssh/config.
-func newClient(endpoint string) *client {
+// If fingerprint is provided, it will be used for host key verification instead of ~/.ssh/known_hosts.
+func newClient(endpoint, fingerprint string) *client {
 	return &client{
-		endpoint: endpoint,
+		endpoint:       endpoint,
+		sshFingerprint: fingerprint,
 	}
 }
 
@@ -284,8 +287,41 @@ func (c *client) getSSHAgentAuth() (ssh.AuthMethod, error) {
 }
 
 // loadHostKeyCallback loads the host key callback for SSH host verification.
-// It uses the standard ~/.ssh/known_hosts file for verification.
+// If a fingerprint is configured, it will be used for verification.
+// Otherwise, it uses the standard ~/.ssh/known_hosts file for verification.
 func (c *client) loadHostKeyCallback() (ssh.HostKeyCallback, error) {
+	// If fingerprint is provided, use fingerprint verification
+	if c.sshFingerprint != "" {
+		return c.fingerprintCallback(), nil
+	}
+
+	// Otherwise use known_hosts verification
+	return c.knownHostsCallback()
+}
+
+// fingerprintCallback creates a host key callback that verifies against the configured fingerprint.
+func (c *client) fingerprintCallback() ssh.HostKeyCallback {
+	return func(hostname string, _ net.Addr, key ssh.PublicKey) error {
+		// Calculate the fingerprint of the received key
+		actualFingerprint := ssh.FingerprintSHA256(key)
+
+		// Compare with expected fingerprint
+		if actualFingerprint != c.sshFingerprint {
+			return fmt.Errorf(
+				"%w: expected %s, got %s for %s",
+				errHostKeyMismatch,
+				c.sshFingerprint,
+				actualFingerprint,
+				hostname,
+			)
+		}
+
+		return nil
+	}
+}
+
+// knownHostsCallback creates a host key callback that verifies against ~/.ssh/known_hosts.
+func (c *client) knownHostsCallback() (ssh.HostKeyCallback, error) {
 	// Get home directory
 	home, err := os.UserHomeDir()
 	if err != nil {

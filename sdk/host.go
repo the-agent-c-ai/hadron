@@ -33,6 +33,7 @@ type Host struct {
 	hardenDocker   bool
 	hardenOS       bool
 	hardenSSH      bool
+	sshFingerprint string
 	plan           *Plan
 }
 
@@ -47,6 +48,7 @@ type HostBuilder struct {
 	hardenDocker   bool
 	hardenOS       bool
 	hardenSSH      bool
+	sshFingerprint string
 }
 
 // FirewallBuilder builds firewall configuration with a fluent API.
@@ -123,6 +125,25 @@ func (hb *HostBuilder) HardenOS() *HostBuilder {
 // SSH daemon is reloaded (not restarted) to preserve current connections.
 func (hb *HostBuilder) HardenSSH() *HostBuilder {
 	hb.hardenSSH = true
+
+	return hb
+}
+
+// Fingerprint sets the expected SSH host key fingerprint for verification.
+// When set, Hadron will verify the host key matches this fingerprint instead of using ~/.ssh/known_hosts.
+// This is useful for automated deployments where pre-populating known_hosts is not practical.
+//
+// Supported formats:
+// - SHA256: "SHA256:abc123..." (recommended, obtained via: ssh-keyscan -t ed25519 host | ssh-keygen -lf -)
+// - MD5: "MD5:ab:cd:ef:..." (legacy, not recommended)
+//
+// Example:
+//
+//	host := plan.Host("user@example.com").
+//	    Fingerprint("SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8").
+//	    Build()
+func (hb *HostBuilder) Fingerprint(fingerprint string) *HostBuilder {
+	hb.sshFingerprint = fingerprint
 
 	return hb
 }
@@ -258,6 +279,7 @@ func (hb *HostBuilder) Build() *Host {
 		hardenDocker:   hb.hardenDocker,
 		hardenOS:       hb.hardenOS,
 		hardenSSH:      hb.hardenSSH,
+		sshFingerprint: hb.sshFingerprint,
 		plan:           hb.plan,
 	}
 
@@ -269,6 +291,11 @@ func (hb *HostBuilder) Build() *Host {
 // Endpoint returns the SSH endpoint (IP, hostname, or SSH config alias).
 func (h *Host) Endpoint() string {
 	return h.endpoint
+}
+
+// SSHFingerprint returns the configured SSH host key fingerprint, or empty string if not set.
+func (h *Host) SSHFingerprint() string {
+	return h.sshFingerprint
 }
 
 // String returns a string representation of the host.

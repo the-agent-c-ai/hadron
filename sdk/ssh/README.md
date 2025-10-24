@@ -21,6 +21,7 @@ Package ssh provides a thin wrapper around `golang.org/x/crypto/ssh`, `github.co
 - **`Pool`**: Manages SSH connections with automatic pooling and cleanup
   - `NewPool(logger)`: Creates a new connection pool
   - `GetClient(endpoint) Connection`: Returns a connection for the endpoint (creates/reuses as needed)
+  - `GetClientWithFingerprint(endpoint, fingerprint) Connection`: Returns a connection with fingerprint verification
   - `CloseAll() error`: Closes all pooled connections
   - `Size() int`: Returns the number of active connections
 
@@ -54,6 +55,7 @@ This design ensures:
   - Ed25519-only host key algorithms (rejects RSA, ECDSA, DSA)
   - SSH agent-based authentication (no key files in plan code)
   - Strict known_hosts verification with helpful error messages
+  - Optional fingerprint-based verification for automated deployments
   - Automatic file descriptor cleanup (prevents SSH agent connection leaks)
 
 ## Usage Example
@@ -89,6 +91,35 @@ if err != nil {
 }
 fmt.Println(stdout)
 ```
+
+### Fingerprint-Based Verification
+
+For automated deployments (CI/CD, Terraform, Ansible-like tools) where pre-populating `~/.ssh/known_hosts` is impractical, you can use fingerprint-based verification:
+
+```go
+// Get the host key fingerprint first:
+// ssh-keyscan -t ed25519 hostname | ssh-keygen -lf -
+// Output: 256 SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8 hostname (ED25519)
+
+pool := ssh.NewPool(logger)
+defer pool.CloseAll()
+
+// Connect with fingerprint verification (bypasses ~/.ssh/known_hosts)
+fingerprint := "SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8"
+conn, err := pool.GetClientWithFingerprint("production-server", fingerprint)
+if err != nil {
+    log.Fatal(err) // Will fail if fingerprint doesn't match
+}
+
+// Use connection as normal
+stdout, stderr, err := conn.Execute("whoami")
+```
+
+**When to use fingerprint verification:**
+- ✅ CI/CD pipelines with ephemeral build agents
+- ✅ Automated provisioning tools (like Hadron plans)
+- ✅ Infrastructure-as-code where the fingerprint is part of the config
+- ❌ Interactive deployments (use `~/.ssh/known_hosts` instead)
 
 ## Error Messages
 
