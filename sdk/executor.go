@@ -58,6 +58,13 @@ func newExecutor(plan *Plan) *executor {
 	}
 }
 
+// getSSHClient returns an SSH client for the given host, using fingerprint verification if configured.
+//
+//nolint:wrapcheck
+func (e *executor) getSSHClient(host *Host) (ssh.Connection, error) {
+	return e.sshPool.GetClientWithFingerprint(host.Endpoint(), host.SSHFingerprint())
+}
+
 // execute performs the actual deployment.
 func (e *executor) execute(ctx context.Context) error {
 	defer func() {
@@ -142,7 +149,7 @@ func (e *executor) deployNetworks() error {
 // deployResource is a generic function to deploy a resource (network or volume).
 // This eliminates code duplication between deployNetwork and deployVolume.
 func (e *executor) deployResource(resource deployableResource, ops resourceOperations) error {
-	client, err := e.sshPool.GetClient(resource.Host().Endpoint())
+	client, err := e.getSSHClient(resource.Host())
 	if err != nil {
 		return fmt.Errorf(errFailedSSHClient, resource.Host(), err)
 	}
@@ -240,7 +247,7 @@ func (e *executor) deployContainers() error {
 
 // deployContainer deploys a single container.
 func (e *executor) deployContainer(container *Container) error {
-	client, err := e.sshPool.GetClient(container.host.Endpoint())
+	client, err := e.getSSHClient(container.host)
 	if err != nil {
 		return fmt.Errorf(errFailedSSHClient, container.host, err)
 	}
@@ -423,7 +430,7 @@ func (e *executor) deployHostPackages(host *Host) error {
 	}
 
 	// Get SSH client for this host
-	client, err := e.sshPool.GetClient(host.Endpoint())
+	client, err := e.getSSHClient(host)
 	if err != nil {
 		return fmt.Errorf(errFailedSSHClient, host, err)
 	}
@@ -485,7 +492,7 @@ func (e *executor) deployHostDockerDaemon(host *Host) error {
 	}
 
 	// Get SSH client for this host
-	client, err := e.sshPool.GetClient(host.Endpoint())
+	client, err := e.getSSHClient(host)
 	if err != nil {
 		return fmt.Errorf(errFailedSSHClient, host, err)
 	}
@@ -589,7 +596,7 @@ func (e *executor) deployAutoUpdates() error {
 // This is always enabled for all hosts - no opt-out.
 func (e *executor) deployHostAutoUpdates(host *Host) error {
 	// Get SSH client for this host
-	client, err := e.sshPool.GetClient(host.Endpoint())
+	client, err := e.getSSHClient(host)
 	if err != nil {
 		return fmt.Errorf(errFailedSSHClient, host, err)
 	}
@@ -635,7 +642,7 @@ func (e *executor) deployHostFirewall(host *Host) error {
 	config := host.firewallConfig
 
 	// Get SSH client for this host
-	client, err := e.sshPool.GetClient(host.Endpoint())
+	client, err := e.getSSHClient(host)
 	if err != nil {
 		return fmt.Errorf(errFailedSSHClient, host, err)
 	}
@@ -823,7 +830,7 @@ func (e *executor) loginHostRegistries(host *Host) error {
 	}
 
 	// Get SSH client for this host
-	client, err := e.sshPool.GetClient(host.Endpoint())
+	client, err := e.getSSHClient(host)
 	if err != nil {
 		return fmt.Errorf(errFailedSSHClient, host, err)
 	}
@@ -869,7 +876,7 @@ func (e *executor) deployHostOSHardening(host *Host) error {
 	}
 
 	// Get SSH client for this host
-	client, err := e.sshPool.GetClient(host.Endpoint())
+	client, err := e.getSSHClient(host)
 	if err != nil {
 		return fmt.Errorf(errFailedSSHClient, host, err)
 	}
@@ -910,7 +917,7 @@ func (e *executor) deployHostSSHHardening(host *Host) error {
 	}
 
 	// Get SSH client for this host
-	client, err := e.sshPool.GetClient(host.Endpoint())
+	client, err := e.getSSHClient(host)
 	if err != nil {
 		return fmt.Errorf(errFailedSSHClient, host, err)
 	}

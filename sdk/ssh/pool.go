@@ -31,6 +31,13 @@ func NewPool(logger zerolog.Logger) *Pool {
 // The endpoint can be an IP address, hostname, or SSH config alias.
 // Connection parameters are resolved from ~/.ssh/config.
 func (p *Pool) GetClient(endpoint string) (Connection, error) {
+	return p.GetClientWithFingerprint(endpoint, "")
+}
+
+// GetClientWithFingerprint returns a Connection for the given endpoint with optional fingerprint verification.
+// If fingerprint is provided, it will be used for host key verification instead of ~/.ssh/known_hosts.
+// The fingerprint should be in SHA256 format (e.g., "SHA256:abc123...") or MD5 format (e.g., "MD5:ab:cd:ef...").
+func (p *Pool) GetClientWithFingerprint(endpoint, fingerprint string) (Connection, error) {
 	// Use endpoint as key since SSH config will resolve the actual connection params
 	key := endpoint
 
@@ -54,7 +61,7 @@ func (p *Pool) GetClient(endpoint string) (Connection, error) {
 
 	p.logger.Debug().Str("endpoint", key).Msg("Creating new SSH connection")
 
-	client := newClient(endpoint)
+	client := newClient(endpoint, fingerprint)
 	if err := client.connect(); err != nil {
 		return nil, fmt.Errorf("failed to connect to %s: %w", key, err)
 	}
