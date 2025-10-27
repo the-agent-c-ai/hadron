@@ -14,7 +14,8 @@ type customInstaller func(client ssh.Connection) error
 func getCustomInstaller(packageName string) (customInstaller, bool) {
 	// Map of package names to custom installation functions
 	customInstallers := map[string]customInstaller{
-		"docker-ce": installDocker,
+		"docker-ce":                installDocker,
+		"prometheus-node-exporter": installNodeExporter,
 	}
 
 	installer, exists := customInstallers[packageName]

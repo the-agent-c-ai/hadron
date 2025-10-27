@@ -25,6 +25,7 @@ var (
 	errHostNotInKnownHosts = errors.New("host key verification failed: host not found in known_hosts")
 	errNoSSHAgent          = errors.New("SSH agent not available: ensure SSH_AUTH_SOCK is set and ssh-agent is running")
 	errInvalidPort         = errors.New("invalid port in SSH config")
+	errPassphraseKey       = errors.New("SSH key is passphrase-protected (use unencrypted key or SSH agent)")
 )
 
 const (
@@ -52,6 +53,7 @@ type client struct {
 	sftpClient     *sftp.Client
 	agentConn      net.Conn
 	sshFingerprint string
+	sshKeyContent  string
 	mu             sync.Mutex
 }
 
@@ -59,14 +61,16 @@ type client struct {
 // The endpoint can be an IP address, hostname, or SSH config alias.
 // Connection parameters (User, Port, Hostname) are resolved from ~/.ssh/config.
 // If fingerprint is provided, it will be used for host key verification instead of ~/.ssh/known_hosts.
-func newClient(endpoint, fingerprint string) *client {
+// If keyContent is provided, it will be used for authentication instead of SSH agent.
+func newClient(endpoint, fingerprint, keyContent string) *client {
 	return &client{
 		endpoint:       endpoint,
 		sshFingerprint: fingerprint,
+		sshKeyContent:  keyContent,
 	}
 }
 
-// connect establishes an SSH connection to the remote host using SSH agent.
+// connect establishes an SSH connection to the remote host using SSH key or agent.
 // Connection parameters are resolved from ~/.ssh/config based on the endpoint.
 func (c *client) connect() error {
 	c.mu.Lock()
@@ -81,8 +85,8 @@ func (c *client) connect() error {
 		return fmt.Errorf("failed to resolve SSH config: %w", err)
 	}
 
-	// Get SSH agent auth method
-	agentAuth, err := c.getSSHAgentAuth()
+	// Get auth method (SSH key or agent)
+	authMethod, err := c.getAuthMethod()
 	if err != nil {
 		return err
 	}
@@ -97,7 +101,7 @@ func (c *client) connect() error {
 	config := &ssh.ClientConfig{
 		User: c.user,
 		Auth: []ssh.AuthMethod{
-			agentAuth,
+			authMethod,
 		},
 		HostKeyCallback: hostKeyCallback,
 		// Only accept Ed25519 host keys (most secure, modern standard)
@@ -260,6 +264,43 @@ func (c *client) Execute(command string) (stdout, stderr string, err error) {
 	}
 
 	return string(stdoutBytes), string(stderrBytes), nil
+}
+
+// getAuthMethod returns an SSH auth method, preferring SSH key over agent.
+// If SSH key content is provided, it will be parsed and used for authentication.
+// Otherwise, falls back to SSH agent authentication.
+func (c *client) getAuthMethod() (ssh.AuthMethod, error) {
+	// If SSH key is provided, use it
+	if c.sshKeyContent != "" {
+		signer, err := c.parseSSHKey()
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse SSH key: %w", err)
+		}
+
+		return ssh.PublicKeys(signer), nil
+	}
+
+	// Otherwise use SSH agent
+	return c.getSSHAgentAuth()
+}
+
+// parseSSHKey parses an SSH private key from the provided content.
+// Supports both encrypted (passphrase-protected) and unencrypted keys.
+// For encrypted keys, this will return an error - passphrase support requires user interaction.
+func (c *client) parseSSHKey() (ssh.Signer, error) {
+	// Parse the private key
+	signer, err := ssh.ParsePrivateKey([]byte(c.sshKeyContent))
+	if err != nil {
+		// Check if this is a passphrase-protected key
+		var passphraseErr *ssh.PassphraseMissingError
+		if errors.As(err, &passphraseErr) {
+			return nil, errPassphraseKey
+		}
+
+		return nil, fmt.Errorf("invalid SSH key format: %w", err)
+	}
+
+	return signer, nil
 }
 
 // getSSHAgentAuth returns an SSH auth method using the SSH agent.

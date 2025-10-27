@@ -6,15 +6,17 @@
 	# Use production Let's Encrypt by default
 	# For testing, add: acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
 
-    # Disables HTTP listener entirely
-    http_port 0
+	# Disable HTTP->HTTPS redirects but keep automatic certificate management
+	# Without port 80 bound, Caddy will use TLS-ALPN-01 challenge on port 443
+	auto_https disable_redirects
 
 	# Prometheus
 	admin :2019
 }
 
-# 1Password SCIM Bridge endpoint
-{$DOMAIN} {
+# Endpoint
+https://{$DOMAIN} {
+
 	# Rate limit: 500 requests per minute per IP
 	#    rate_limit {
 	#        zone dynamic {
@@ -24,9 +26,46 @@
 	#        }
 	#    }
 
+    @scanners {
+        path *.php *.asp *.aspx *.jsp
+        path /wp-* /wordpress/* /xmlrpc.php
+        path /.git/* /config/* /.aws/*
+        path /admin /php*
+        path /api/v1/pods/* # k8s scanners
+        path /.well-known/security.txt # unless you actually have one
+        path *.env*
+    }
+
+    @bad_bots {
+        header_regexp User-Agent "(?i)(curl|masscan|zgrab|nmap|sqlmap|nikto)"
+        header User-Agent *crawler*
+        header User-Agent *scanner*
+        header User-Agent python-requests*
+    }
+
+    @bad_methods {
+        method TRACE TRACK OPTIONS
+    }
+
+    handle @scanners {
+        log_name shit
+        abort
+    }
+
+    handle @bad_bots {
+        log_name shit
+        abort
+    }
+
+    handle @bad_methods {
+        log_name shit
+        abort
+    }
+
 	@webhooks path {$MOUNTPOINT}
 
 	handle @webhooks {
+        log_name proper
         # Reverse proxy to SCIM bridge
         reverse_proxy {$REVERSE}:{$REVERSE_PORT} {
             health_uri {$REVERSE_HEALTH}
@@ -50,6 +89,7 @@
 
 	# Serve robots.txt
 	handle /robots.txt {
+		log_name proper
 		respond "User-agent: *
 Disallow: /" 200 {
 			close
@@ -58,12 +98,14 @@ Disallow: /" 200 {
 
 	# Serve favicon
 	handle /favicon.ico {
+		log_name proper
 		root * /etc/caddy/static/imgs
 		file_server
 	}
 
 	# Block all other requests
 	handle {
+        log_name shit
         abort
 	}
 
@@ -90,17 +132,24 @@ Disallow: /" 200 {
 		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'"
 	}
 
-	# Access logging (stdout for Vector Agent collection)
-	log {
+	log proper {
 		output stdout
 		format json
 		level {$LOG_LEVEL}
+		no_hostname
 	}
+
+    log shit {
+		output stdout
+		format json
+		level {$LOG_LEVEL}
+		no_hostname
+    }
 
 	# Error handling with static pages
 	handle_errors {
-		rewrite * /errors/{err.status_code}.html
 		root * /etc/caddy/static
+		rewrite * /errors/{err.status_code}.html
 		file_server
 	}
 }

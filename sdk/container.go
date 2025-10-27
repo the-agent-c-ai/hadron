@@ -10,31 +10,41 @@ import (
 	"github.com/the-agent-c-ai/hadron/sdk/hash"
 )
 
+const (
+	commaSeparator = ","
+)
+
 // Container represents a Docker container.
 type Container struct {
 	name              string
 	host              *Host
 	image             string
-	command           []string // optional command arguments to append to docker run
-	user              string   // user:group or UID:GID
-	memory            string   // memory limit (e.g., "512m", "2g")
-	memoryReservation string   // memory soft limit
-	cpuShares         int64    // CPU shares (relative weight)
-	network           *Network
+	command           []string   // optional command arguments to append to docker run
+	user              string     // user:group or UID:GID
+	memory            string     // memory limit (e.g., "512m", "2g")
+	memoryReservation string     // memory soft limit
+	cpuShares         int64      // CPU shares (relative weight)
+	cpus              string     // hard CPU limit (e.g., "1.5" for 1.5 CPUs)
+	pidsLimit         int64      // maximum number of PIDs (process limit)
+	hostname          string     // container hostname
+	networks          []*Network // networks to connect to
 	networkAlias      string
 	ports             []string
+	extraHosts        []string // extra host:ip mappings (e.g., "host.docker.internal:host-gateway")
 	volumes           []VolumeMount
 	mounts            []FileMount
 	dataMounts        []DataMount
 	tmpfs             map[string]string // mount point -> options (e.g., "noexec,size=100m")
 	envFile           string
 	envVars           map[string]string
+	labels            map[string]string // Docker labels for metadata and service discovery
 	healthCheck       *HealthCheck
 	dependsOn         []*Container
 	readOnly          bool
 	securityOpts      []string
 	capDrop           []string
 	capAdd            []string
+	groupAdd          []string // additional groups for the container user
 	restart           string
 	plan              *Plan
 }
@@ -66,26 +76,32 @@ type ContainerBuilder struct {
 	name              string
 	host              *Host
 	image             string
-	command           []string // optional command arguments to append to docker run
-	user              string   // user:group or UID:GID
-	memory            string   // memory limit (e.g., "512m", "2g")
-	memoryReservation string   // memory soft limit
-	cpuShares         int64    // CPU shares (relative weight)
-	network           *Network
+	command           []string   // optional command arguments to append to docker run
+	user              string     // user:group or UID:GID
+	memory            string     // memory limit (e.g., "512m", "2g")
+	memoryReservation string     // memory soft limit
+	cpuShares         int64      // CPU shares (relative weight)
+	cpus              string     // hard CPU limit (e.g., "1.5" for 1.5 CPUs)
+	pidsLimit         int64      // maximum number of PIDs (process limit)
+	hostname          string     // container hostname
+	networks          []*Network // networks to connect to
 	networkAlias      string
 	ports             []string
+	extraHosts        []string // extra host:ip mappings (e.g., "host.docker.internal:host-gateway")
 	volumes           []VolumeMount
 	mounts            []FileMount
 	dataMounts        []DataMount
 	tmpfs             map[string]string // mount point -> options (e.g., "noexec,size=100m")
 	envFile           string
 	envVars           map[string]string
+	labels            map[string]string // Docker labels for metadata and service discovery
 	healthCheck       *HealthCheck
 	dependsOn         []*Container
 	readOnly          bool
 	securityOpts      []string
 	capDrop           []string
 	capAdd            []string
+	groupAdd          []string // additional groups for the container user
 	restart           string
 }
 
@@ -139,9 +155,31 @@ func (cb *ContainerBuilder) CPUShares(shares int64) *ContainerBuilder {
 	return cb
 }
 
+// CPUs sets the hard CPU limit for the container (e.g., "1.5" for 1.5 CPUs).
+func (cb *ContainerBuilder) CPUs(cpus string) *ContainerBuilder {
+	cb.cpus = cpus
+
+	return cb
+}
+
+// PIDsLimit sets the maximum number of PIDs (process limit) for the container.
+func (cb *ContainerBuilder) PIDsLimit(limit int64) *ContainerBuilder {
+	cb.pidsLimit = limit
+
+	return cb
+}
+
+// Hostname sets the hostname for the container.
+func (cb *ContainerBuilder) Hostname(hostname string) *ContainerBuilder {
+	cb.hostname = hostname
+
+	return cb
+}
+
 // Network sets the Docker network for this container.
+// Network adds a network to the container. Can be called multiple times to connect to multiple networks.
 func (cb *ContainerBuilder) Network(network *Network) *ContainerBuilder {
-	cb.network = network
+	cb.networks = append(cb.networks, network)
 
 	return cb
 }
@@ -156,6 +194,15 @@ func (cb *ContainerBuilder) NetworkAlias(alias string) *ContainerBuilder {
 // Port adds a port mapping (format: "host:container" or "port").
 func (cb *ContainerBuilder) Port(port string) *ContainerBuilder {
 	cb.ports = append(cb.ports, port)
+
+	return cb
+}
+
+// ExtraHosts adds a custom host-to-IP mapping (format: "hostname:ip").
+// Special value "host-gateway" maps to the host's gateway IP.
+// Example: ExtraHosts("host.docker.internal:host-gateway").
+func (cb *ContainerBuilder) ExtraHosts(mapping string) *ContainerBuilder {
+	cb.extraHosts = append(cb.extraHosts, mapping)
 
 	return cb
 }
@@ -253,6 +300,13 @@ func (cb *ContainerBuilder) Env(key, value string) *ContainerBuilder {
 	return cb
 }
 
+// Label sets a Docker label for metadata and service discovery.
+func (cb *ContainerBuilder) Label(key, value string) *ContainerBuilder {
+	cb.labels[key] = value
+
+	return cb
+}
+
 // HealthCheck sets the health check for this container.
 func (cb *ContainerBuilder) HealthCheck(check *HealthCheck) *ContainerBuilder {
 	cb.healthCheck = check
@@ -296,6 +350,14 @@ func (cb *ContainerBuilder) CapAdd(capability string) *ContainerBuilder {
 	return cb
 }
 
+// GroupAdd adds an additional group for the container user.
+// Useful for granting access to host resources (e.g., "docker" for socket access).
+func (cb *ContainerBuilder) GroupAdd(group string) *ContainerBuilder {
+	cb.groupAdd = append(cb.groupAdd, group)
+
+	return cb
+}
+
 // Restart sets the restart policy (default: unless-stopped).
 func (cb *ContainerBuilder) Restart(policy string) *ContainerBuilder {
 	cb.restart = policy
@@ -317,6 +379,23 @@ func (cb *ContainerBuilder) Build() *Container {
 		cb.restart = "unless-stopped"
 	}
 
+	// Enforce mandatory resource limits (CIS Docker Benchmark compliance)
+	if cb.memory == "" {
+		cb.plan.logger.Fatal().Str("container", cb.name).Msg("memory limit is required (CIS 5.10)")
+	}
+
+	if cb.cpuShares == 0 {
+		cb.plan.logger.Fatal().Str("container", cb.name).Msg("cpu-shares is required (CIS 5.11)")
+	}
+
+	if cb.cpus == "" {
+		cb.plan.logger.Fatal().Str("container", cb.name).Msg("cpus limit is required")
+	}
+
+	if cb.pidsLimit == 0 {
+		cb.plan.logger.Fatal().Str("container", cb.name).Msg("pids-limit is required")
+	}
+
 	container := &Container{
 		name:              cb.name,
 		host:              cb.host,
@@ -326,21 +405,27 @@ func (cb *ContainerBuilder) Build() *Container {
 		memory:            cb.memory,
 		memoryReservation: cb.memoryReservation,
 		cpuShares:         cb.cpuShares,
-		network:           cb.network,
+		cpus:              cb.cpus,
+		pidsLimit:         cb.pidsLimit,
+		hostname:          cb.hostname,
+		networks:          cb.networks,
 		networkAlias:      cb.networkAlias,
 		ports:             cb.ports,
+		extraHosts:        cb.extraHosts,
 		volumes:           cb.volumes,
 		mounts:            cb.mounts,
 		dataMounts:        cb.dataMounts,
 		tmpfs:             cb.tmpfs,
 		envFile:           cb.envFile,
 		envVars:           cb.envVars,
+		labels:            cb.labels,
 		healthCheck:       cb.healthCheck,
 		dependsOn:         cb.dependsOn,
 		readOnly:          cb.readOnly,
 		securityOpts:      cb.securityOpts,
 		capDrop:           cb.capDrop,
 		capAdd:            cb.capAdd,
+		groupAdd:          cb.groupAdd,
 		restart:           cb.restart,
 		plan:              cb.plan,
 	}
@@ -407,15 +492,35 @@ func (c *Container) ConfigHash() string {
 		configParts = append(configParts, fmt.Sprintf("cpu-shares:%d", c.cpuShares))
 	}
 
-	if c.network != nil {
-		configParts = append(configParts, c.network.Name())
+	if c.cpus != "" {
+		configParts = append(configParts, "cpus:"+c.cpus)
+	}
+
+	if c.pidsLimit > 0 {
+		configParts = append(configParts, fmt.Sprintf("pids-limit:%d", c.pidsLimit))
+	}
+
+	if c.hostname != "" {
+		configParts = append(configParts, c.hostname)
+	}
+
+	// Include all networks in config hash (sorted for determinism)
+	if len(c.networks) > 0 {
+		networkNames := make([]string, len(c.networks))
+		for i, net := range c.networks {
+			networkNames[i] = net.Name()
+		}
+
+		sort.Strings(networkNames)
+		configParts = append(configParts, strings.Join(networkNames, commaSeparator))
 	}
 
 	if c.networkAlias != "" {
 		configParts = append(configParts, c.networkAlias)
 	}
 
-	configParts = append(configParts, strings.Join(c.ports, ","))
+	configParts = append(configParts, strings.Join(c.ports, commaSeparator))
+	configParts = append(configParts, strings.Join(c.extraHosts, commaSeparator))
 
 	for _, v := range c.volumes {
 		configParts = append(configParts, fmt.Sprintf("%s:%s:%s", v.source, v.target, v.mode))
@@ -485,11 +590,23 @@ func (c *Container) ConfigHash() string {
 		configParts = append(configParts, fmt.Sprintf("%s=%s", k, c.envVars[k]))
 	}
 
+	// Sort label keys for deterministic hash
+	labelKeys := make([]string, 0, len(c.labels))
+	for k := range c.labels {
+		labelKeys = append(labelKeys, k)
+	}
+
+	sort.Strings(labelKeys)
+
+	for _, k := range labelKeys {
+		configParts = append(configParts, fmt.Sprintf("label:%s=%s", k, c.labels[k]))
+	}
+
 	configParts = append(configParts, fmt.Sprintf("readonly=%t", c.readOnly))
-	//revive:disable:add-constant
-	configParts = append(configParts, strings.Join(c.securityOpts, ","))
-	configParts = append(configParts, strings.Join(c.capDrop, ","))
-	configParts = append(configParts, strings.Join(c.capAdd, ","))
+	configParts = append(configParts, strings.Join(c.securityOpts, commaSeparator))
+	configParts = append(configParts, strings.Join(c.capDrop, commaSeparator))
+	configParts = append(configParts, strings.Join(c.capAdd, commaSeparator))
+	configParts = append(configParts, strings.Join(c.groupAdd, commaSeparator))
 	configParts = append(configParts, c.restart)
 
 	config := strings.Join(configParts, "|")

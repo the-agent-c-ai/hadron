@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# format-caddy-config.sh - Validate and format Caddyfile using Docker container
+# validate-caddy-config.sh - Validate and format Caddyfile using Docker container
 #
-# Usage: ./format-caddy-config.sh <path-to-Caddyfile>
+# Usage: ./validate-caddy-config.sh <path-to-Caddyfile>
 #
 # Validates and reformats Caddyfile configuration using the Caddy fmt command
 # in a Docker container. Uses the same Caddy image version as production (from straw/plans/.env).

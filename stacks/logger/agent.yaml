@@ -54,7 +54,7 @@ transforms:
       - auth_security
     source: |
       .service_name = "auth"
-      .container = "none"
+      .container_name = "none"
 
   # UFW: Only log blocked connections, not all traffic
   ufw_blocks_only:
@@ -69,7 +69,7 @@ transforms:
       - ufw_blocks_only
     source: |
       .service_name = "firewall"
-      .container = "none"
+      .container_name = "none"
 
   # Parse and enrich Docker logs
   parse_docker_logs:
@@ -81,16 +81,8 @@ transforms:
       .service_name = "docker"
 
       # Extract container metadata
-      if exists(.container_name) {
-        .container = .container_name
-      } else {
-        .container = "none"
-      }
       if exists(.container_id) {
         .container_id = slice!(.container_id, start: 0, end: 12)
-      }
-      if exists(.image) {
-        .container_image = .image
       }
 
       # Parse timestamp
@@ -109,9 +101,11 @@ transforms:
         }
       }
 
-      # Add labels from Docker container
-      if exists(.label) {
-        .labels = .label
+      # Remove unnecessary Docker labels to reduce payload size
+      if exists(.label) && is_object(.label) {
+        .label = filter(object!(.label)) -> |key, value| {
+          !starts_with(key, "org.opencontainers") && !starts_with(key, "prometheus")
+        }
       }
 
   # Add host context to all logs
@@ -123,8 +117,9 @@ transforms:
       - parse_docker_logs
     source: |
       .environment = get_env_var("ENVIRONMENT") ?? "production"
-      .host = get_hostname!()
+      .host = get_hostname() ?? "unknown"
       .agent_version = get_env_var("VECTOR_VERSION") ?? "unknown"
+      del(.source_type)  # Remove source_type before sending to Loki
 
 # ============================================================================
 # SINKS - Send to your backend
@@ -147,7 +142,7 @@ sinks:
       environment: "{{ environment }}"
       host: "{{ host }}"
       service_name: "{{ service_name }}"
-      container: "{{ container }}"
+      container_name: "{{ container_name }}"
     remove_label_fields: true
     batch:
       timeout_secs: 1

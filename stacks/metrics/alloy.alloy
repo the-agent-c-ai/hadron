@@ -1,0 +1,113 @@
+// Grafana Alloy configuration for collecting Prometheus metrics from Black containers
+// and forwarding to Grafana Cloud
+//
+// Uses Docker service discovery to automatically scrape containers with prometheus.scrape=true label.
+
+// Discover all Docker containers
+discovery.docker "containers" {
+	host = "unix:///var/run/docker.sock"
+}
+
+// Filter to containers with Prometheus metrics enabled via label
+discovery.relabel "prometheus_targets" {
+	targets = discovery.docker.containers.targets
+
+	// Keep only containers with prometheus.scrape=true label
+	rule {
+		source_labels = ["__meta_docker_container_label_prometheus_scrape"]
+		regex         = "true"
+		action        = "keep"
+	}
+
+	// Use prometheus.port label for metrics port (default 9090 if not specified)
+	rule {
+		source_labels = ["__meta_docker_container_label_prometheus_port"]
+		regex         = "(.+)"
+		target_label  = "__meta_docker_port_private"
+	}
+
+	// Set job label from container name (remove leading slash)
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "job"
+	}
+
+	// Add container name label
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "container"
+	}
+
+	// Add environment label
+	rule {
+		replacement  = sys.env("ENVIRONMENT")
+		target_label = "environment"
+	}
+}
+
+// Scrape all discovered Docker containers
+prometheus.scrape "docker_containers" {
+	targets         = discovery.relabel.prometheus_targets.output
+	forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+	scrape_interval = "60s"
+	scrape_timeout  = "10s"
+}
+
+// Scrape host node_exporter (listening on docker0 bridge at 172.17.0.1:9100)
+prometheus.scrape "node_exporter" {
+	targets = [
+		{
+			__address__  = "172.17.0.1:9100",
+			job          = "node",
+			instance     = "black-host",
+			environment  = sys.env("ENVIRONMENT"),
+		},
+	]
+
+	forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+	scrape_interval = "60s"
+	scrape_timeout  = "10s"
+}
+
+// Scrape Alloy's own metrics for meta-monitoring
+prometheus.exporter.self "alloy" { }
+
+prometheus.scrape "alloy_self" {
+	targets         = prometheus.exporter.self.alloy.targets
+	forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+	scrape_interval = "60s"
+	scrape_timeout  = "10s"
+}
+
+// Scrape cAdvisor for per-container resource metrics
+prometheus.exporter.cadvisor "containers" {
+	docker_host      = "unix:///var/run/docker.sock"
+	storage_duration = "2m"
+	docker_only      = true
+}
+
+prometheus.scrape "cadvisor" {
+	targets         = prometheus.exporter.cadvisor.containers.targets
+	forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+	scrape_interval = "60s"
+	scrape_timeout  = "10s"
+}
+
+// Remote write to Grafana Cloud Prometheus
+prometheus.remote_write "grafana_cloud" {
+	endpoint {
+		url = sys.env("PROMETHEUS_ENDPOINT")
+
+		basic_auth {
+			username = sys.env("PROMETHEUS_USERNAME")
+			password = sys.env("PROMETHEUS_PASSWORD")
+		}
+
+		queue_config {
+			max_shards          = 5
+			batch_send_deadline = "15s"
+		}
+	}
+}
