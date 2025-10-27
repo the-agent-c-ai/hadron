@@ -8,22 +8,36 @@ discovery.docker "containers" {
 	host = "unix:///var/run/docker.sock"
 }
 
-// Filter to containers with Prometheus metrics enabled via label
-discovery.relabel "prometheus_targets" {
+// Filter to containers with Prometheus metrics enabled (no auth required)
+discovery.relabel "prometheus_targets_noauth" {
 	targets = discovery.docker.containers.targets
 
-	// Keep only containers with prometheus.scrape=true label
+	// Keep only containers with prometheus.scrape=true AND no auth label
 	rule {
 		source_labels = ["__meta_docker_container_label_prometheus_scrape"]
 		regex         = "true"
 		action        = "keep"
 	}
 
-	// Use prometheus.port label for metrics port (default 9090 if not specified)
+	// Drop containers that have bearer token auth configured
+	rule {
+		source_labels = ["__meta_docker_container_label_prometheus_auth_bearer"]
+		regex         = ".+"
+		action        = "drop"
+	}
+
+	// Use prometheus.port label for metrics port
 	rule {
 		source_labels = ["__meta_docker_container_label_prometheus_port"]
 		regex         = "(.+)"
 		target_label  = "__meta_docker_port_private"
+	}
+
+	// Use prometheus.path label for metrics path
+	rule {
+		source_labels = ["__meta_docker_container_label_prometheus_path"]
+		regex         = "(.+)"
+		target_label  = "__metrics_path__"
 	}
 
 	// Set job label from container name (remove leading slash)
@@ -47,12 +61,78 @@ discovery.relabel "prometheus_targets" {
 	}
 }
 
-// Scrape all discovered Docker containers
-prometheus.scrape "docker_containers" {
-	targets         = discovery.relabel.prometheus_targets.output
+// Filter to containers with Prometheus metrics enabled (bearer auth required)
+discovery.relabel "prometheus_targets_bearer_auth" {
+	targets = discovery.docker.containers.targets
+
+	// Keep only containers with prometheus.scrape=true AND bearer auth label
+	rule {
+		source_labels = ["__meta_docker_container_label_prometheus_scrape"]
+		regex         = "true"
+		action        = "keep"
+	}
+
+	// Keep only containers that have bearer token auth configured
+	rule {
+		source_labels = ["__meta_docker_container_label_prometheus_auth_bearer"]
+		regex         = ".+"
+		action        = "keep"
+	}
+
+	// Use prometheus.port label for metrics port
+	rule {
+		source_labels = ["__meta_docker_container_label_prometheus_port"]
+		regex         = "(.+)"
+		target_label  = "__meta_docker_port_private"
+	}
+
+	// Use prometheus.path label for metrics path
+	rule {
+		source_labels = ["__meta_docker_container_label_prometheus_path"]
+		regex         = "(.+)"
+		target_label  = "__metrics_path__"
+	}
+
+	// Set job label from container name (remove leading slash)
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "job"
+	}
+
+	// Add container name label
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "container"
+	}
+
+	// Add environment label
+	rule {
+		replacement  = sys.env("ENVIRONMENT")
+		target_label = "environment"
+	}
+}
+
+// Scrape Docker containers without authentication
+prometheus.scrape "docker_containers_noauth" {
+	targets         = discovery.relabel.prometheus_targets_noauth.output
 	forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
 	scrape_interval = "60s"
 	scrape_timeout  = "10s"
+}
+
+// Scrape Docker containers with bearer token authentication
+// NOTE: Alloy does not support per-target bearer tokens via labels (open feature request).
+// This uses a single bearer token from PROMETHEUS_BEARER_TOKEN environment variable.
+// All targets in this scrape job must accept the same token.
+prometheus.scrape "docker_containers_bearer_auth" {
+	targets         = discovery.relabel.prometheus_targets_bearer_auth.output
+	forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+	scrape_interval = "60s"
+	scrape_timeout  = "10s"
+	bearer_token    = sys.env("PROMETHEUS_BEARER_TOKEN")
+	enable_http2    = false
 }
 
 // Scrape host node_exporter (listening on docker0 bridge at 172.17.0.1:9100)

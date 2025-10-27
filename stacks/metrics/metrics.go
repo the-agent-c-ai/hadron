@@ -18,13 +18,14 @@ const (
 
 // Config contains configuration for the Grafana Alloy metrics collector.
 type Config struct {
-	Image              string         // GHCR image with digest
-	Networks           []*sdk.Network // Networks to join for scraping targets
-	Environment        string         // Environment label (production, staging, etc.)
-	LogLevel           string         // Log level (debug, info, warn, error)
-	PrometheusEndpoint string         // Grafana Cloud Prometheus URL
-	PrometheusUsername string         // Grafana Cloud username
-	PrometheusPassword string         // Grafana Cloud API token
+	Image                 string         // GHCR image with digest
+	Networks              []*sdk.Network // Networks to join for scraping targets
+	Environment           string         // Environment label (production, staging, etc.)
+	LogLevel              string         // Log level (debug, info, warn, error)
+	PrometheusEndpoint    string         // Grafana Cloud Prometheus URL
+	PrometheusUsername    string         // Grafana Cloud username
+	PrometheusPassword    string         // Grafana Cloud API token
+	PrometheusBearerToken string         // Bearer token for authenticated scrape targets (optional)
 }
 
 // Metrics deploys a Grafana Alloy container for collecting Prometheus metrics
@@ -62,6 +63,7 @@ func Metrics(
 		Env("PROMETHEUS_ENDPOINT", cnf.PrometheusEndpoint).
 		Env("PROMETHEUS_USERNAME", cnf.PrometheusUsername).
 		Env("PROMETHEUS_PASSWORD", cnf.PrometheusPassword).
+		Env("PROMETHEUS_BEARER_TOKEN", cnf.PrometheusBearerToken). // Bearer token for authenticated targets
 		Restart("unless-stopped").
 		User("473").
 		// Should be $(stat -c '%g' /var/run/docker.sock) - also, ignore the warning and see this clusterfuck:
