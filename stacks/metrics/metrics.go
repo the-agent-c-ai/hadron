@@ -21,11 +21,12 @@ type Config struct {
 	Image                 string         // GHCR image with digest
 	Networks              []*sdk.Network // Networks to join for scraping targets
 	Environment           string         // Environment label (production, staging, etc.)
-	LogLevel              string         // Log level (debug, info, warn, error)
-	PrometheusEndpoint    string         // Grafana Cloud Prometheus URL
-	PrometheusUsername    string         // Grafana Cloud username
-	PrometheusPassword    string         // Grafana Cloud API token
-	PrometheusBearerToken string         // Bearer token for authenticated scrape targets (optional)
+	Instance              string
+	LogLevel              string // Log level (debug, info, warn, error)
+	PrometheusEndpoint    string // Grafana Cloud Prometheus URL
+	PrometheusUsername    string // Grafana Cloud username
+	PrometheusPassword    string // Grafana Cloud API token
+	PrometheusBearerToken string // Bearer token for authenticated scrape targets (optional)
 }
 
 // Metrics deploys a Grafana Alloy container for collecting Prometheus metrics
@@ -59,6 +60,7 @@ func Metrics(
 		ExtraHosts("host.docker.internal:host-gateway").                 // Access host services (e.g., node_exporter)
 		MountData([]byte(alloyConfig), "/etc/alloy/config.alloy", "ro"). // Config (read-only)
 		Env("ENVIRONMENT", cnf.Environment).
+		Env("INSTANCE", cnf.Instance).
 		Env("LOG_LEVEL", cnf.LogLevel).
 		Env("PROMETHEUS_ENDPOINT", cnf.PrometheusEndpoint).
 		Env("PROMETHEUS_USERNAME", cnf.PrometheusUsername).

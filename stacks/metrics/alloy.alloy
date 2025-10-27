@@ -141,7 +141,7 @@ prometheus.scrape "node_exporter" {
 		{
 			__address__  = "172.17.0.1:9100",
 			job          = "node",
-			instance     = "black-host",
+			instance     = sys.env("INSTANCE"),
 			environment  = sys.env("ENVIRONMENT"),
 		},
 	]
