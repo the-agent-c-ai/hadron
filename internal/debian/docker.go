@@ -1,6 +1,7 @@
 package debian
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -13,6 +14,8 @@ const (
 	dockerRepoFile = "/etc/apt/sources.list.d/docker.list"
 	dockerKeyrings = "/etc/apt/keyrings"
 )
+
+var errCreateDockerGroup = errors.New("failed to create docker group")
 
 // installDocker installs Docker CE following the official Debian installation procedure.
 // See: https://docs.docker.com/engine/install/debian/
@@ -140,6 +143,15 @@ func setupDockerRepository(client ssh.Connection) error {
 
 // installDockerPackages installs Docker CE and related packages.
 func installDockerPackages(client ssh.Connection) error {
+	// Create docker group with predictable GID 900 before package installation
+	// This ensures the docker group exists with a known GID for container access
+	createGroupCmd := "sudo groupadd --system --gid 900 docker 2>/dev/null || true"
+
+	_, stderr, err := client.Execute(createGroupCmd)
+	if err != nil {
+		return fmt.Errorf("%w: %s", errCreateDockerGroup, stderr)
+	}
+
 	packages := []string{
 		"docker-ce",
 		"docker-ce-cli",
@@ -151,7 +163,7 @@ func installDockerPackages(client ssh.Connection) error {
 		" ",
 	)
 
-	_, stderr, err := client.Execute(installCmd)
+	_, stderr, err = client.Execute(installCmd)
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrDockerPackageInstall, stderr)
 	}

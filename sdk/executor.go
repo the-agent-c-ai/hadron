@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -19,6 +20,8 @@ const (
 	errFailedSSHClient = "failed to get SSH client for %s: %w"
 	dockerReadyTimeout = 30 * time.Second
 )
+
+var errConnectToNetwork = errors.New("failed to connect container to network")
 
 // deployableResource represents a resource that can be deployed (Network, Volume).
 type deployableResource interface {
@@ -58,11 +61,11 @@ func newExecutor(plan *Plan) *executor {
 	}
 }
 
-// getSSHClient returns an SSH client for the given host, using fingerprint verification if configured.
+// getSSHClient returns an SSH client for the given host, using SSH key and/or fingerprint verification if configured.
 //
 //nolint:wrapcheck
 func (e *executor) getSSHClient(host *Host) (ssh.Connection, error) {
-	return e.sshPool.GetClientWithFingerprint(host.Endpoint(), host.SSHFingerprint())
+	return e.sshPool.GetClientWithKey(host.Endpoint(), host.SSHFingerprint(), host.SSHKeyContent())
 }
 
 // execute performs the actual deployment.
@@ -369,6 +372,15 @@ func (e *executor) deployContainer(container *Container) error {
 			Msg("Data mount uploaded successfully")
 	}
 
+	// Prepare labels (merge user labels with system labels)
+	labels := make(map[string]string)
+	for k, v := range container.labels {
+		labels[k] = v
+	}
+
+	labels[labelConfigSHA] = container.ConfigHash()
+	labels[labelPlan] = e.plan.name
+
 	// Prepare run options
 	opts := docker.ContainerRunOptions{
 		Name:              container.name,
@@ -378,9 +390,13 @@ func (e *executor) deployContainer(container *Container) error {
 		Memory:            container.memory,
 		MemoryReservation: container.memoryReservation,
 		CPUShares:         container.cpuShares,
+		CPUs:              container.cpus,
+		PIDsLimit:         container.pidsLimit,
+		Hostname:          container.hostname,
 		Network:           "",
 		NetworkAlias:      container.networkAlias,
 		Ports:             container.ports,
+		ExtraHosts:        container.extraHosts,
 		Volumes:           volumes,
 		Tmpfs:             container.tmpfs,
 		EnvFile:           container.envFile,
@@ -390,19 +406,34 @@ func (e *executor) deployContainer(container *Container) error {
 		SecurityOpts:      container.securityOpts,
 		CapDrop:           container.capDrop,
 		CapAdd:            container.capAdd,
-		Labels: map[string]string{
-			labelConfigSHA: container.ConfigHash(),
-			labelPlan:      e.plan.name,
-		},
+		GroupAdd:          container.groupAdd,
+		Labels:            labels,
 	}
 
-	if container.network != nil {
-		opts.Network = container.network.Name()
+	// Set primary network (first network in list, or empty if none)
+	if len(container.networks) > 0 {
+		opts.Network = container.networks[0].Name()
 	}
 
 	// Run container
 	if err := e.dockerExec.RunContainer(client, opts); err != nil {
 		return fmt.Errorf("failed to run container: %w", err)
+	}
+
+	// Connect to additional networks (if more than one network specified)
+	for i := 1; i < len(container.networks); i++ {
+		networkName := container.networks[i].Name()
+		connectCmd := fmt.Sprintf("docker network connect %s %s", networkName, container.name)
+
+		e.plan.logger.Info().
+			Str("container", container.name).
+			Str("network", networkName).
+			Msg("Connecting container to additional network")
+
+		_, stderr, err := client.Execute(connectCmd)
+		if err != nil {
+			return fmt.Errorf("%w %s: %s", errConnectToNetwork, networkName, stderr)
+		}
 	}
 
 	// TODO: Perform health check if configured

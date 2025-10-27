@@ -34,6 +34,7 @@ type Host struct {
 	hardenOS       bool
 	hardenSSH      bool
 	sshFingerprint string
+	sshKeyContent  string
 	plan           *Plan
 }
 
@@ -49,6 +50,7 @@ type HostBuilder struct {
 	hardenOS       bool
 	hardenSSH      bool
 	sshFingerprint string
+	sshKeyContent  string
 }
 
 // FirewallBuilder builds firewall configuration with a fluent API.
@@ -144,6 +146,24 @@ func (hb *HostBuilder) HardenSSH() *HostBuilder {
 //	    Build()
 func (hb *HostBuilder) Fingerprint(fingerprint string) *HostBuilder {
 	hb.sshFingerprint = fingerprint
+
+	return hb
+}
+
+// SSHKey sets the SSH private key content for authentication.
+// When set, Hadron will use this key instead of SSH agent for authentication.
+// The key should be in OpenSSH format (PEM).
+//
+// Note: Only unencrypted keys are supported. For passphrase-protected keys, use SSH agent instead.
+//
+// Example:
+//
+//	keyContent := "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"
+//	host := plan.Host("user@example.com").
+//	    SSHKey(keyContent).
+//	    Build()
+func (hb *HostBuilder) SSHKey(keyContent string) *HostBuilder {
+	hb.sshKeyContent = keyContent
 
 	return hb
 }
@@ -280,6 +300,7 @@ func (hb *HostBuilder) Build() *Host {
 		hardenOS:       hb.hardenOS,
 		hardenSSH:      hb.hardenSSH,
 		sshFingerprint: hb.sshFingerprint,
+		sshKeyContent:  hb.sshKeyContent,
 		plan:           hb.plan,
 	}
 
@@ -296,6 +317,11 @@ func (h *Host) Endpoint() string {
 // SSHFingerprint returns the configured SSH host key fingerprint, or empty string if not set.
 func (h *Host) SSHFingerprint() string {
 	return h.sshFingerprint
+}
+
+// SSHKeyContent returns the configured SSH private key content, or empty string if not set.
+func (h *Host) SSHKeyContent() string {
+	return h.sshKeyContent
 }
 
 // String returns a string representation of the host.

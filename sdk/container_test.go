@@ -32,6 +32,11 @@ func TestContainerBuilder(t *testing.T) {
 		NetworkAlias("nginx").
 		Port("80:80").
 		Env("FOO", "bar").
+		Memory("256m").
+		MemoryReservation("128m").
+		CPUShares(512).
+		CPUs("0.5").
+		PIDsLimit(100).
 		ReadOnly().
 		CapDrop("ALL").
 		CapAdd("NET_BIND_SERVICE").
@@ -77,6 +82,11 @@ func TestContainerVolumeMounts(t *testing.T) {
 	container := plan.Container("test").
 		Host(host).
 		Image("nginx:latest").
+		Memory("256m").
+		MemoryReservation("128m").
+		CPUShares(512).
+		CPUs("0.5").
+		PIDsLimit(100).
 		Volume(volume, "/data").
 		Volume("/host/path", "/container/path", "ro").
 		Build()
@@ -103,6 +113,11 @@ func TestContainerConfigHash(t *testing.T) {
 	container := plan.Container("test").
 		Host(host).
 		Image("nginx:latest").
+		Memory("256m").
+		MemoryReservation("128m").
+		CPUShares(512).
+		CPUs("0.5").
+		PIDsLimit(100).
 		Port("80:80").
 		Build()
 
@@ -120,6 +135,11 @@ func TestContainerConfigHash(t *testing.T) {
 	container2 := plan.Container("test").
 		Host(host).
 		Image("nginx:latest").
+		Memory("256m").
+		MemoryReservation("128m").
+		CPUShares(512).
+		CPUs("0.5").
+		PIDsLimit(100).
 		Port("80:80").
 		Build()
 
@@ -131,6 +151,11 @@ func TestContainerConfigHash(t *testing.T) {
 	container3 := plan.Container("test").
 		Host(host).
 		Image("nginx:alpine").
+		Memory("256m").
+		MemoryReservation("128m").
+		CPUShares(512).
+		CPUs("0.5").
+		PIDsLimit(100).
 		Port("80:80").
 		Build()
 

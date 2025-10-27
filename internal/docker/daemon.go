@@ -24,6 +24,7 @@ type DaemonConfig struct {
 	UserlandProxy   bool                    `json:"userland-proxy"`
 	NoNewPrivileges bool                    `json:"no-new-privileges"`
 	ICC             bool                    `json:"icc"`
+	BIP             string                  `json:"bip,omitempty"` // Bridge IP (docker0 network)
 	LogDriver       string                  `json:"log-driver"`
 	LogOpts         map[string]string       `json:"log-opts"`
 	DefaultUlimits  map[string]UlimitConfig `json:"default-ulimits"`
@@ -45,6 +46,7 @@ func GetSecureDefaults() *DaemonConfig {
 		UserlandProxy:   false,
 		NoNewPrivileges: true,
 		ICC:             false,
+		BIP:             "172.17.0.1/16", // Matches docker0IP in node_exporter.go
 		LogDriver:       "json-file",
 		LogOpts: map[string]string{
 			"max-size": "10m",

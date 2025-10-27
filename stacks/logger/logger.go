@@ -26,6 +26,8 @@ type Config struct {
 	Image         string
 	LogLevel      string
 	Environment   string
+	Hostname      string
+	Version       string
 	LokiEndpoint  string
 	LokiUsername  string
 	LokiPassword  string
@@ -43,12 +45,6 @@ func Logger(plan *sdk.Plan, host *sdk.Host, vectorNet *sdk.Network, cnf *Config)
 	if cnf.Mode != Webhook {
 		alias = "vector-host"
 		config = []byte(agentYAML)
-		// vector: Isolated observability network for Vector (outbound-only + docker socket)
-		// Segregated to limit lateral movement from compromised observability components
-		vectorNet = plan.Network("vector-isolated").
-			Host(host).
-			Driver("bridge").
-			Build()
 	}
 
 	// Vector agent data directory (for buffering to aggregator)
@@ -65,8 +61,11 @@ func Logger(plan *sdk.Plan, host *sdk.Host, vectorNet *sdk.Network, cnf *Config)
 	con := plan.Container(alias).
 		Host(host).
 		Image(cnf.Image).
+		Hostname(cnf.Hostname).
 		Network(vectorNet).
 		NetworkAlias(alias).
+		Label("prometheus.scrape", "true").
+		Label("prometheus.port", "9598").
 		Volume(vectorAgentData, "/var/lib/vector"). // Writable: buffering, state
 		MountData(config, "/etc/vector/vector.yaml", "ro").
 		Env("LOKI_ENDPOINT", cnf.LokiEndpoint).
@@ -74,15 +73,18 @@ func Logger(plan *sdk.Plan, host *sdk.Host, vectorNet *sdk.Network, cnf *Config)
 		Env("LOKI_PASSWORD", cnf.LokiPassword).
 		Env("ENVIRONMENT", cnf.Environment).
 		Env("VECTOR_LOG", cnf.LogLevel).
+		Env("VECTOR_VERSION", cnf.Version).
 		Env("GENERIC_WEBHOOK_SECRET", cnf.WebhookSecret).
 		Env("AUTH0_WEBHOOK_SECRET", cnf.WebhookSecret).
 		Restart("unless-stopped").
 		ReadOnly().
 		CapDrop("ALL").
 		SecurityOpt("no-new-privileges").
-		Memory("1024m").
-		MemoryReservation("256m").
-		CPUShares(512).
+		Memory("768m").
+		MemoryReservation("384m").
+		CPUShares(1024).
+		CPUs("1.0").
+		PIDsLimit(100).
 		HealthCheck(sdk.HTTPCheck("/health", 8686).
 			WithTimeout(30 * time.Second).
 			WithInterval(30 * time.Second).
